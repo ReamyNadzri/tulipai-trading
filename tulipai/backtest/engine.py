@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Config
-from ..execution import check_exit, entry_fill, exit_fill_market, initial_levels, money
+from ..execution import check_exit, entry_fill, exit_fill_market, initial_levels, money, spread_array
 from ..indicators import Features
 from ..management import manage_position
 from ..risk import RiskManager, in_blackout
@@ -93,7 +93,7 @@ class Backtester:
         balance = float(bt.initial_balance if initial_balance is None else initial_balance)
 
         o, h, l, c = (df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close"))
-        spread = df["spread"].to_numpy(dtype=float) if "spread" in df.columns else np.full(n, bt.spread)
+        spread = spread_array(df, bt.spread)
         feats = features or Features(df, sym.timeframe)
         atr = feats.atr(14).to_numpy(dtype=float)
         sig = signals["signal"].to_numpy()

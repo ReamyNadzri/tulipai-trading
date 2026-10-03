@@ -8,6 +8,19 @@ target we assume the stop came first (pessimistic).
 
 from __future__ import annotations
 
+import numpy as np
+
+
+def spread_array(df, floor: float) -> np.ndarray:
+    """Per-bar spread in price units, never below ``floor``.
+
+    MT5 stores a single spread value per bar (typically the tightest of the bar), which
+    understates what market orders really pay, so the configured spread acts as a floor.
+    """
+    if "spread" in df.columns:
+        return np.maximum(df["spread"].to_numpy(dtype=float), floor)
+    return np.full(len(df), float(floor))
+
 
 def entry_fill(side: int, bid_open: float, spread: float, slippage: float) -> float:
     return bid_open + spread + slippage if side > 0 else bid_open - slippage

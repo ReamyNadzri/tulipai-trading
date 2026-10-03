@@ -42,8 +42,27 @@ RETRY_PRICE = {10004, 10020, 10021}
 CENT_CURRENCIES = {"USC", "USCENT", "USX"}
 
 
+NY = "America/New_York"
+
+
 class MT5Error(RuntimeError):
     pass
+
+
+def _ny_offset_hours(ts_utc: pd.Timestamp) -> int:
+    """New York's UTC offset at that moment: -5 in winter, -4 in summer."""
+    return int(ts_utc.tz_convert(NY).utcoffset().total_seconds() // 3600)
+
+
+def last_ny_close(now_utc: pd.Timestamp) -> pd.Timestamp:
+    """Most recent 17:00 New York time (gold's daily/weekly close) at or before ``now_utc``."""
+    ny = now_utc.tz_convert(NY)
+    close = ny.replace(hour=17, minute=0, second=0, microsecond=0)
+    if close > ny:
+        close = (ny - pd.Timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+    while close.weekday() >= 5:  # no close on Saturday/Sunday
+        close = (close - pd.Timedelta(days=1)).replace(hour=17)
+    return close.tz_convert("UTC")
 
 
 def import_mt5():
@@ -70,6 +89,7 @@ class MT5Broker(Broker):
         self.symbol = ""
         self.offset = timedelta(0)
         self.offset_note = ""
+        self.dst_mode = False
         self._lock = threading.RLock()
         self._spec: Optional[SymbolSpec] = None
         self._is_demo = True
@@ -159,27 +179,64 @@ class MT5Broker(Broker):
             raise MT5Error("No gold symbol (XAUUSD*/GOLD*) found on this server; set symbol.name in the config.")
         return best
 
-    def _detect_offset(self) -> None:
+    def _detect_offset(self, now: pd.Timestamp | None = None) -> None:
+        """Work out how the broker's server clock relates to UTC.
+
+        MT5 reports every time in server time. Most brokers run either a fixed offset
+        (e.g. UTC+0) or "New York close + 7h" (UTC+2 in winter, UTC+3 in summer, switching
+        with US daylight saving). Live, the latest tick gives the offset directly. With the
+        market closed (weekends, daily break) the last tick is anchored to the last 17:00
+        New York close instead.
+        """
         setting = self.cfg.symbol.server_utc_offset_hours
+        self.dst_mode = False
+        if isinstance(setting, str) and setting.lower().replace(" ", "") in ("ny+7", "ny7"):
+            self.dst_mode = True
+            self.offset = timedelta(hours=_ny_offset_hours(now or pd.Timestamp.now(tz="UTC")) + 7)
+            self.offset_note = "configured: New York time + 7h (UTC+2 winter / UTC+3 summer)"
+            return
         if setting != "auto":
             self.offset = timedelta(hours=float(setting))
-            self.offset_note = f"configured UTC{float(setting):+g}"
+            self.offset_note = f"configured fixed UTC{float(setting):+g}"
             return
+        now = now or pd.Timestamp.now(tz="UTC")
+        hours, how = None, ""
         tick = self.mt5.symbol_info_tick(self.symbol)
         if tick is not None and getattr(tick, "time", 0):
-            diff = float(tick.time) - time.time()
-            hours = round(diff / 3600)
-            if abs(diff - hours * 3600) < 120:
-                self.offset = timedelta(hours=hours)
-                self.offset_note = f"auto-detected UTC{hours:+d}"
-                return
-        self.offset = timedelta(hours=2)
-        self.offset_note = ("market closed - could not auto-detect server time, assuming UTC+2; set "
-                            "symbol.server_utc_offset_hours if your broker differs")
+            diff = float(tick.time) - now.timestamp()
+            h = round(diff / 3600)
+            if abs(diff - h * 3600) < 120:
+                hours, how = h, "live tick"
+            else:
+                close = last_ny_close(now)
+                diff = float(tick.time) - close.timestamp()
+                h = round(diff / 3600)
+                if abs(diff - h * 3600) < 20 * 60 and -12 <= h <= 14:
+                    hours, how = h, f"market closed; last tick matched the {close:%a %H:%M} UTC close"
+        if hours is None:
+            self.offset = timedelta(hours=2)
+            self.offset_note = ("WARNING: could not detect the server time zone, assuming UTC+2. Set "
+                                "symbol.server_utc_offset_hours (e.g. 0, 2, 3 or 'ny+7') in config/config.yaml")
+            return
+        self.offset = timedelta(hours=hours)
+        if hours == _ny_offset_hours(now) + 7:
+            self.dst_mode = True
+            self.offset_note = (f"auto-detected UTC{hours:+d} ({how}); server follows New York daylight saving "
+                                "(UTC+2 winter / UTC+3 summer)")
+        else:
+            self.offset_note = f"auto-detected fixed UTC{hours:+d} ({how})"
 
     # ------------------------------------------------------------------ data
+    def _to_utc(self, server_seconds) -> pd.DatetimeIndex:
+        srv = pd.DatetimeIndex(pd.to_datetime(np.asarray(server_seconds, dtype=np.int64), unit="s", utc=True))
+        if not getattr(self, "dst_mode", False):
+            return srv - self.offset
+        approx = srv - pd.Timedelta(hours=3)
+        ny_off = approx.tz_convert(NY).tz_localize(None) - approx.tz_localize(None)
+        return srv - (ny_off + pd.Timedelta(hours=7))
+
     def _ts(self, server_seconds: float) -> pd.Timestamp:
-        return pd.Timestamp(datetime.fromtimestamp(float(server_seconds), tz=timezone.utc) - self.offset)
+        return self._to_utc([int(server_seconds)])[0]
 
     def now(self) -> pd.Timestamp:
         return pd.Timestamp.now(tz="UTC")
@@ -225,7 +282,7 @@ class MT5Broker(Broker):
 
     def _rates_df(self, rates, point: float) -> pd.DataFrame:
         r = pd.DataFrame(rates)
-        idx = pd.DatetimeIndex(pd.to_datetime(r["time"].astype(np.int64), unit="s", utc=True)) - self.offset
+        idx = self._to_utc(r["time"].to_numpy())
         out = pd.DataFrame({"open": r["open"].to_numpy(), "high": r["high"].to_numpy(), "low": r["low"].to_numpy(),
                             "close": r["close"].to_numpy(), "volume": r["tick_volume"].to_numpy()}, index=idx)
         if "spread" in r.columns and point > 0:
@@ -246,9 +303,14 @@ class MT5Broker(Broker):
         step = pd.Timedelta(days=60)
         while cur < end:
             nxt = min(cur + step, end)
-            with self._lock:
-                rates = self.mt5.copy_rates_range(self.symbol, tf, (cur + self.offset).to_pydatetime(),
-                                                  (nxt + self.offset).to_pydatetime())
+            rates = None
+            for attempt in range(3):  # the terminal may still be downloading old history
+                with self._lock:
+                    rates = self.mt5.copy_rates_range(self.symbol, tf, (cur + self.offset).to_pydatetime(),
+                                                      (nxt + self.offset).to_pydatetime())
+                if rates is not None and len(rates):
+                    break
+                time.sleep(1.0 + attempt)
             if rates is not None and len(rates):
                 frames.append(self._rates_df(rates, self.spec().point))
             cur = nxt

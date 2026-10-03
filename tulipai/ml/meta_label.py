@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Config
-from ..execution import simulate_trade
+from ..execution import simulate_trade, spread_array
 from ..indicators import Features
 from ..risk import RiskManager
 
@@ -68,7 +68,7 @@ def build_dataset(df: pd.DataFrame, signals: pd.DataFrame, cfg: Config, feats: O
     ff = feature_frame(feats)
     atr = feats.atr(14).to_numpy()
     o, h, l, c = (df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close"))
-    spread = df["spread"].to_numpy(dtype=float) if "spread" in df.columns else np.full(len(df), cfg.backtest.spread)
+    spread = spread_array(df, cfg.backtest.spread)
     risk = RiskManager(cfg.risk, cfg.tf_minutes)
     bar = pd.Timedelta(minutes=cfg.tf_minutes)
     max_bars = cfg.management.max_bars_in_trade or 96

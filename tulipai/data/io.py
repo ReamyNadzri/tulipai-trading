@@ -85,8 +85,9 @@ def load_csv(path: str | Path, utc_offset_hours: float = 0.0) -> pd.DataFrame:
     raw.index = idx
     drop = [c for c in ("date", "time", "datetime", "timestamp", "gmt time", "local time") if c in raw.columns]
     raw = raw.drop(columns=drop)
-    if "spread" in raw.columns and raw["spread"].abs().max() > 50:
-        # MT5 exports spread in points; without the symbol's point size we cannot convert safely.
+    if "spread" in raw.columns and ("tickvol" in raw.columns or raw["spread"].abs().max() > 50):
+        # MT5 "Export bars" files give spread in points; without the symbol's point size it
+        # cannot be converted safely, so fall back to the configured spread.
         raw = raw.drop(columns=["spread"])
     return normalize(raw)
 

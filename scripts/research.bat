@@ -1,17 +1,32 @@
 @echo off
-REM One-shot research run on your broker's real gold history (MT5 must be installed and
-REM logged in): download 2 years of M15 bars, backtest with benchmarks, walk-forward, ML.
+REM One-shot research on your broker's real gold history. MT5 must be installed (and
+REM logged in, or credentials in .env). Downloads ~2 years of M15 bars, then runs the
+REM backtest + benchmarks, walk-forward and ML filter, and writes:
+REM   reports\research_summary.txt   <- send this file to Claude
+REM   reports\backtest.html, reports\walkforward.html
+REM Takes roughly 10-30 minutes depending on your PC.
+setlocal
 cd /d "%~dp0\.."
-set PY=".venv\Scripts\python.exe"
-%PY% -m tulipai fetch --source mt5 --start 2024-09-01 --out data\xauusd_m15.csv || goto :fail
-%PY% -m tulipai backtest --data data\xauusd_m15.csv --mc 200 --report reports\backtest.html || goto :fail
-%PY% -m tulipai walkforward --data data\xauusd_m15.csv --report reports\walkforward.html || goto :fail
-%PY% -m tulipai train-ml --data data\xauusd_m15.csv
+
+where py >nul 2>nul
+if %errorlevel%==0 (set PY=py -3) else (set PY=python)
+if not exist ".venv\Scripts\python.exe" (
+  echo [TulipAI] First run: creating a Python environment...
+  %PY% -m venv .venv || goto :fail
+  ".venv\Scripts\python.exe" -m pip install --upgrade pip
+  ".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto :fail
+  ".venv\Scripts\python.exe" -m pip install -e . || goto :fail
+)
+
+".venv\Scripts\python.exe" -m tulipai research %* || goto :fail
 echo.
-echo Done. Open the reports folder: backtest.html and walkforward.html
+echo Done. Send reports\research_summary.txt to Claude.
+start "" reports
 start "" reports\walkforward.html
 pause
 goto :eof
+
 :fail
-echo Something failed - see the message above.
+echo.
+echo Something failed - see the message above (copy it to Claude if unsure).
 pause

@@ -39,7 +39,7 @@ class AccountConfig:
 class SymbolConfig:
     name: str = "auto"  # auto -> XAUUSDc / XAUUSDm / XAUUSD / GOLD ...
     timeframe: str = "M15"
-    server_utc_offset_hours: Any = "auto"  # "auto" or a number such as 2 / 3
+    server_utc_offset_hours: Any = "auto"  # "auto", a fixed number (0, 2, 3...) or "ny+7"
     history_bars: int = 6000  # enough M15 bars for the H4 EMA50 trend filter to fully converge
     # Backtest/paper contract model. Live trading reads the real spec from MT5.
     contract_size: float = 100.0  # ounces per 1.0 lot
@@ -143,7 +143,7 @@ class NewsConfig:
 @dataclass
 class BacktestConfig:
     initial_balance: float = 10000.0  # account currency; 10000 USC = 100 USD on a cent account
-    spread: float = 0.35  # price units, used when the data has no spread column
+    spread: float = 0.35  # price units; used when data has no spread, and as a floor under MT5's bar spread
     slippage: float = 0.05
     commission_per_lot: float = 0.0  # round-turn, account currency
     warmup_bars: int = 300

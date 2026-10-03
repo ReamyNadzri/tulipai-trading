@@ -7,6 +7,7 @@ manager, and every limit in risk.py still applies to whatever Claude proposes.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import time
@@ -90,9 +91,7 @@ class ClaudeBrain:
 
     @staticmethod
     def available() -> tuple[bool, str]:
-        try:
-            import anthropic  # noqa: F401
-        except ImportError:
+        if importlib.util.find_spec("anthropic") is None:
             return False, "anthropic package not installed (pip install anthropic)"
         if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
             return False, "ANTHROPIC_API_KEY is not set (put it in .env or the control panel)"

@@ -36,6 +36,7 @@ def random_entry_benchmark(
     start: int = 0,
     end: int | None = None,
     features: Features | None = None,
+    progress: bool = False,
 ) -> dict:
     trades = result.trades
     if len(trades) < 5:
@@ -72,7 +73,9 @@ def random_entry_benchmark(
     n_signals = min(len(cand), int(len(trades) * 1.6) + 5)
     bt = Backtester(cfg)
     nets, rets, dds, ntr = [], [], [], []
-    for _ in range(n_sims):
+    for k in range(n_sims):
+        if progress and k and k % 20 == 0:
+            print(f"  random-entry run {k}/{n_sims}", flush=True)
         pick = np.sort(rng.choice(cand, size=n_signals, replace=False))
         g = geom[rng.integers(0, len(geom), size=n_signals)]
         sig = pd.DataFrame(index=df.index, data={"signal": 0, "sl_dist": 0.0, "tp_dist": 0.0, "strength": 0.0, "strategy": ""})

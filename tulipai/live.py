@@ -25,7 +25,7 @@ from .ai.brain import AIDecision, ClaudeBrain
 from .ai.context import build_context
 from .broker.base import AccountInfo, Broker, BrokerPosition, Tick
 from .config import Config
-from .execution import simulate_trade
+from .execution import simulate_trade, spread_array
 from .indicators import Features
 from .journal import Journal
 from .management import manage_position
@@ -232,7 +232,7 @@ class LiveEngine:
         if not shadows:
             return
         o, h, l, c = (df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close"))
-        spread = df["spread"].to_numpy(dtype=float) if "spread" in df.columns else np.full(len(df), self.cfg.backtest.spread)
+        spread = spread_array(df, self.cfg.backtest.spread)
         max_bars = self.cfg.management.max_bars_in_trade or 96
         for s in shadows:
             t = pd.Timestamp(s["bar_time"])

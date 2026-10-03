@@ -240,3 +240,51 @@ def test_panel_requires_token_and_localhost(cfg, tmp_path):
             urllib.request.urlopen(bad_host)
     finally:
         httpd.shutdown()
+
+
+# ---------------------------------------------------------------------------- server time zone
+def test_offset_detected_on_weekend_and_dst_aware(cfg):
+    """Saturday: no live ticks. The last tick (Friday's close) must still reveal the offset, and a
+    UTC+3-in-summer broker must be recognised as 'New York + 7h' so winter bars use UTC+2."""
+    df = synthetic_gold(start="2025-06-02", days=12, seed=3)
+    last_friday_bar = df.index.get_loc(pd.Timestamp("2025-06-13 20:45", tz="UTC"))
+    fake = FakeMT5(df, start_index=last_friday_bar, offset_hours=3)
+    b = MT5Broker(cfg, mt5_module=fake)
+    b.symbol = "XAUUSDc"
+    b._detect_offset(now=pd.Timestamp("2025-06-14 12:00", tz="UTC"))
+    assert b.offset.total_seconds() == 3 * 3600 and b.dst_mode, b.offset_note
+    summer = int(pd.Timestamp("2025-06-13 23:45").timestamp())  # server time label
+    winter = int(pd.Timestamp("2025-01-10 22:45").timestamp())
+    assert b._ts(summer) == pd.Timestamp("2025-06-13 20:45", tz="UTC")
+    assert b._ts(winter) == pd.Timestamp("2025-01-10 20:45", tz="UTC")
+
+
+def test_offset_fixed_utc0_broker(cfg):
+    df = synthetic_gold(start="2025-06-02", days=12, seed=3)
+    i = df.index.get_loc(pd.Timestamp("2025-06-13 20:45", tz="UTC"))
+    fake = FakeMT5(df, start_index=i, offset_hours=0)
+    b = MT5Broker(cfg, mt5_module=fake)
+    b.symbol = "XAUUSDc"
+    b._detect_offset(now=pd.Timestamp("2025-06-14 12:00", tz="UTC"))
+    assert b.offset.total_seconds() == 0 and not b.dst_mode
+
+
+def test_research_command_end_to_end(cfg, tmp_path, monkeypatch):
+    """`tulip research` against the fake MT5: download, backtest, benchmark, walk-forward, ML, summary."""
+    import tulipai.broker.mt5 as mt5mod
+    from tulipai import cli
+
+    df = synthetic_gold(start="2024-01-01", days=300, seed=4)
+    fake = FakeMT5(df, start_index=len(df) - 1, offset_hours=2)
+    monkeypatch.setattr(mt5mod, "import_mt5", lambda: fake)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("symbol:\n  server_utc_offset_hours: 2\nnews:\n  enabled: false\n")
+    rc = cli.main(["research", "--start", "2024-01-01", "--end", "2024-10-25", "--mc", "4", "--max-combos", "2",
+                   "--train-months", "3", "--test-months", "2"])
+    assert rc == 0
+    text = (tmp_path / "reports" / "research_summary.txt").read_text()
+    for needle in ("== 1. Data ==", "Symbol: XAUUSDc", "VERDICT", "Walk-forward", "ML meta-label", "Finished"):
+        assert needle in text, needle
+    assert "password" not in text.lower().replace("no passwords", "")
+    assert (tmp_path / "reports" / "walkforward.html").exists() and (tmp_path / "data" / "xauusd_m15.csv").exists()

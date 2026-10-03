@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from ..config import Config
-from ..execution import check_exit, entry_fill, exit_fill_market, money
+from ..execution import check_exit, entry_fill, exit_fill_market, money, spread_array
 from .base import AccountInfo, Broker, BrokerPosition, ClosedTrade, OrderResult, SymbolSpec, Tick
 
 
@@ -24,7 +23,7 @@ class ReplayBroker(Broker):
         self.i = max(1, start_index)
         self.o, self.h, self.l, self.c = (df[k].to_numpy(dtype=float) for k in ("open", "high", "low", "close"))
         bt = cfg.backtest
-        self.sp = df["spread"].to_numpy(dtype=float) if "spread" in df.columns else np.full(len(df), bt.spread)
+        self.sp = spread_array(df, bt.spread)
         self.slip, self.comm = bt.slippage, bt.commission_per_lot
         self.cs, self.vm = cfg.symbol.contract_size, cfg.symbol.value_multiplier
         self.balance = float(bt.initial_balance if initial_balance is None else initial_balance)

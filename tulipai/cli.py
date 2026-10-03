@@ -198,7 +198,7 @@ def cmd_backtest(args) -> int:
     rb = None
     if args.mc:
         print(f"Running {args.mc} random-entry simulations...")
-        rb = random_entry_benchmark(df, cfg, res, n_sims=args.mc, start=start, features=feats)
+        rb = random_entry_benchmark(df, cfg, res, n_sims=args.mc, start=start, features=feats, progress=True)
         if rb.get("n_sims"):
             print(f"Random entries: mean {rb['random_net_mean']:+.2f}, 5-95% [{rb['random_net_p5']:+.2f}, "
                   f"{rb['random_net_p95']:+.2f}]; strategy beats {rb['strategy_percentile']:.0f}% (p={rb['p_value']:.3f})")
@@ -366,6 +366,130 @@ def cmd_review(args) -> int:
     return 0
 
 
+def cmd_research(args) -> int:
+    """Fetch broker history, backtest + benchmarks, walk-forward and ML in one go, and write
+    everything worth sharing to reports/research_summary.txt."""
+    import time as _time
+
+    import yaml
+
+    from .backtest.benchmark import buy_and_hold, random_entry_benchmark
+    from .backtest.metrics import format_metrics
+    from .backtest.walkforward import summarize_windows, walk_forward
+    from .data.io import load_csv, save_csv
+    from .report import build_report, write_report
+
+    cfg = _cfg(args)
+    lines: list[str] = []
+
+    def out(text: str = "") -> None:
+        print(text, flush=True)
+        lines.append(text)
+
+    out(f"TulipAI research summary - generated {pd.Timestamp.now(tz='UTC'):%Y-%m-%d %H:%M} UTC")
+    out("(No passwords or account numbers are included in this file.)")
+    t0 = _time.time()
+
+    # 1. data -------------------------------------------------------------------------
+    out("\n== 1. Data ==")
+    if args.data:
+        df = load_csv(args.data)
+        out(f"Loaded {args.data}")
+    else:
+        b = _mt5_broker(cfg)
+        acct = b.connect()
+        spec = b.spec()
+        out(f"Broker: {acct.company} | server {acct.server} | currency {acct.currency} | "
+            f"{'DEMO' if acct.is_demo else 'REAL'} | leverage 1:{acct.leverage}")
+        out(f"Symbol: {spec.name} | digits {spec.digits} | contract {spec.contract_size} | volume "
+            f"{spec.volume_min}-{spec.volume_max} step {spec.volume_step} | min stop distance {spec.stops_level}")
+        out(f"Server time: {b.offset_note}")
+        try:
+            t = b.tick()
+            out(f"Last tick: {t.time:%Y-%m-%d %H:%M} UTC bid {t.bid} ask {t.ask} spread {t.spread:.3f}")
+            lpl = b.loss_per_lot(1, t.ask, t.ask - 10.0)
+            out(f"Sizing check: a $10 stop on 0.01 lot loses {lpl / 100:.2f} {acct.currency}")
+        except Exception as exc:  # pragma: no cover - depends on the broker
+            out(f"Tick unavailable: {exc}")
+        end = pd.Timestamp(args.end, tz="UTC") if args.end else pd.Timestamp.now(tz="UTC")
+        df = b.history(pd.Timestamp(args.start, tz="UTC"), end, cfg.symbol.timeframe)
+        b.shutdown()
+        save_csv(df, args.out)
+        out(f"Saved to {args.out}")
+    gaps = (df.index[1:] - df.index[:-1]) > pd.Timedelta(days=4)
+    out(f"{len(df)} {cfg.symbol.timeframe} bars from {df.index[0]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d} "
+        f"| price {df['close'].min():.2f}-{df['close'].max():.2f} | gaps > 4 days: {int(gaps.sum())}")
+    if "spread" in df.columns:
+        sp = df["spread"]
+        out(f"Spread (from MT5 bars): median {sp.median():.3f}, 90th pct {sp.quantile(0.9):.3f}; backtest floor "
+            f"{cfg.backtest.spread}")
+    if args.start and df.index[0] > pd.Timestamp(args.start, tz="UTC") + pd.Timedelta(days=20):
+        out(f"NOTE: MT5 only had history from {df.index[0]:%Y-%m-%d}. For more, set MT5 Tools > Options > Charts > "
+            "Max bars in chart to Unlimited, scroll the gold M15 chart back, and run again.")
+    hours = df.index.hour.value_counts().reindex(range(24), fill_value=0)
+    quiet = hours.idxmin()
+    out(f"Quietest UTC hour in the data: {quiet:02d}:00 (gold's daily break is 21:00-22:00 UTC in summer, "
+        "22:00-23:00 in winter; a big mismatch means the server time zone is wrong)")
+
+    # 2. backtest + benchmarks --------------------------------------------------------
+    out("\n== 2. Backtest with default settings (in-sample) ==")
+    res, feats, start, strat = _run_backtest(argparse.Namespace(ml=False, calendar=None), cfg, df)
+    out(format_metrics(res.metrics()))
+    out(f"Signals blocked: {res.blocked}")
+    bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
+    out(f"Buy & hold gold: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%, Sharpe {bh['sharpe']:.2f})")
+    rb = None
+    if args.mc:
+        out(f"Random-entry benchmark ({args.mc} runs)...")
+        rb = random_entry_benchmark(df, cfg, res, n_sims=args.mc, start=start, features=feats, progress=True)
+        if rb.get("n_sims"):
+            out(f"Random entries: mean {rb['random_net_mean']:+.2f}, 5-95% [{rb['random_net_p5']:+.2f}, "
+                f"{rb['random_net_p95']:+.2f}]; strategy beats {rb['strategy_percentile']:.0f}% (p={rb['p_value']:.3f})")
+            out(f"VERDICT: {rb['verdict']}")
+        else:
+            out(rb.get("note", ""))
+    page = build_report(res, "TulipAI backtest (broker data)", f"{df.index[start]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}",
+                        buy_hold=bh_eq, random_bench=rb, notes=NOTES)
+    out(f"Report: {write_report('reports/backtest.html', page)}")
+
+    # 3. walk-forward -----------------------------------------------------------------
+    out(f"\n== 3. Walk-forward, out-of-sample (train {args.train_months}m / test {args.test_months}m) ==")
+    try:
+        wf = walk_forward(df, cfg, args.train_months, args.test_months, args.max_combos, 15)
+        out(summarize_windows(wf).to_string(index=False, float_format=lambda v: f"{v:+.2f}"))
+        out(format_metrics(wf.metrics()))
+        Path("config").mkdir(exist_ok=True)
+        Path("config/optimized_params.yaml").write_text(
+            yaml.safe_dump({"strategy": {"params": wf.best_params}}, sort_keys=False), encoding="utf-8")
+        out("Latest parameters: " + str(wf.best_params))
+        sub = df[df.index >= wf.oos.equity.index[0] - pd.Timedelta(minutes=cfg.tf_minutes)]
+        wf_bh, _ = buy_and_hold(sub, wf.oos.initial_balance, bar_minutes=cfg.tf_minutes)
+        page = build_report(wf.oos, "TulipAI walk-forward (broker data)", "Out-of-sample only", buy_hold=wf_bh,
+                            windows=wf.windows, notes=NOTES)
+        out(f"Report: {write_report('reports/walkforward.html', page)}")
+    except ValueError as exc:
+        out(f"Walk-forward skipped: {exc}")
+
+    # 4. ML filter --------------------------------------------------------------------
+    out("\n== 4. ML meta-label filter ==")
+    try:
+        from .ml import train
+
+        _, rep = train(df, strat.generate(feats), cfg, out_path=cfg.ml.model_path)
+        out(rep.text())
+        out("Filter helps on the test period - consider ml.enabled: true" if rep.test_avg_r_kept > rep.test_avg_r_all
+            else "Filter does NOT help on the test period - keep ml.enabled: false")
+    except Exception as exc:
+        out(f"ML skipped: {exc}")
+
+    out(f"\nFinished in {(_time.time() - t0) / 60:.1f} min.")
+    path = Path("reports/research_summary.txt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\nSaved {path}. Send that file (or paste its text) to Claude.")
+    return 0
+
+
 def cmd_close_all(args) -> int:
     cfg = _cfg(args)
     b = _mt5_broker(cfg)
@@ -463,6 +587,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mode", default=None)
     s.add_argument("--out", default="reports/review.md")
     s.set_defaults(fn=cmd_review)
+
+    s = sub.add_parser("research", help="fetch MT5 history + backtest + benchmarks + walk-forward + ML, one summary")
+    s.add_argument("--start", default="2024-09-01")
+    s.add_argument("--end")
+    s.add_argument("--data", help="use this CSV instead of downloading from MT5")
+    s.add_argument("--out", default="data/xauusd_m15.csv")
+    s.add_argument("--mc", type=int, default=200)
+    s.add_argument("--train-months", type=int, default=6)
+    s.add_argument("--test-months", type=int, default=1)
+    s.add_argument("--max-combos", type=int, default=27)
+    s.set_defaults(fn=cmd_research)
 
     s = sub.add_parser("close-all", help="close every position opened by the bot")
     s.set_defaults(fn=cmd_close_all)

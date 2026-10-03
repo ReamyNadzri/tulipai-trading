@@ -54,8 +54,18 @@ on and awake while it trades, or use a cheap Windows VPS.
 
 ## 2. Prove it before you trust it
 
-These commands run on the PC with MT5 and use **your broker's own gold history**. Double-click
-`scripts\research.bat` to run all of them, or run them one by one:
+With MT5 open and logged in, double-click **`scripts\research.bat`**. It does everything in one go
+on **your broker's own gold history** (about 10-30 minutes):
+
+1. downloads about 2 years of M15 bars from MT5 and checks the broker's server time zone;
+2. backtests the strategies and compares them with buy & hold and 200 random-entry runs;
+3. runs walk-forward optimisation (tuned on old data, tested on newer data it has never seen);
+4. trains the optional ML filter and reports whether it helps.
+
+It writes **`reports\research_summary.txt`** (send this to Claude; it contains no passwords or
+account numbers) plus `reports\backtest.html` and `reports\walkforward.html`.
+
+The same steps one by one:
 
 ```bat
 .venv\Scripts\python -m tulipai fetch --source mt5 --start 2024-09-01        :: ~2 years of M15 bars
@@ -211,6 +221,7 @@ trade management, news blackout, Claude or ML, so its numbers will differ from t
 ```
 python -m tulipai panel                 # browser control panel (what TulipAI.bat runs)
 python -m tulipai live [--paper]        # headless bot using .env credentials (scripts\run_headless.bat)
+python -m tulipai research              # one-shot: MT5 history + backtest + benchmarks + walk-forward + ML
 python -m tulipai doctor --mt5          # check packages, API key, MT5 connection, symbol spec, sizing
 python -m tulipai fetch --source mt5|dukascopy|synthetic --start YYYY-MM-DD [--end ...]
 python -m tulipai backtest --data CSV [--mc 200] [--ml] [--calendar events.csv] [--params file]
@@ -236,7 +247,7 @@ are sent.
 | "Could not start/connect MetaTrader 5" | Check login, password and server. Set the terminal path if MT5 isn't in the default folder. |
 | "REAL account detected" | It's a cent/live account. Demo-test first, then set `allow_real_account: true`. |
 | No gold symbol found | Show all symbols in MT5 (*Market Watch → right click → Show All*), or set `symbol.name`. |
-| "market closed - could not auto-detect server time" | Normal at weekends. Set `symbol.server_utc_offset_hours` (often 2 or 3) to silence it. |
+| "could not detect the server time zone" | Set `symbol.server_utc_offset_hours`: a fixed number (Exness uses `0`) or `ny+7` for brokers on UTC+2 in winter / UTC+3 in summer. Session times depend on this. |
 | "invalid stops" (10016) | Your broker's minimum stop distance is large. Raise `risk.min_sl_atr`. |
 | Not enough history | In MT5 *Tools → Options → Charts*, set *Max bars in chart* to Unlimited and scroll the gold chart back. |
 

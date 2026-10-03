@@ -1,0 +1,114 @@
+// TulipAI Gold - TradingView companion of the Python bot.
+// Same core rules as the bot's `session_breakout` and `trend_pullback` strategies, so you can
+// SEE the signals on your chart and cross-check results in TradingView's Strategy Tester.
+// It is a visual aid: break-even/trailing management, news blackout, Claude and the ML
+// filter only exist in the Python bot, so numbers will not match the bot exactly.
+// Use on XAUUSD M15. All session times are UTC.
+//@version=5
+strategy("TulipAI Gold (breakout + trend pullback)", overlay=true, initial_capital=10000, pyramiding=0,
+     default_qty_type=strategy.fixed, slippage=5, commission_type=strategy.commission.percent, commission_value=0.0)
+
+// ---------------------------------------------------------------- inputs
+riskPct    = input.float(1.0, "Risk per trade (% equity)", minval=0.1, maxval=5, group="Risk")
+sessStart  = input.int(7, "Trade from (UTC hour)", minval=0, maxval=23, group="Risk")
+sessEnd    = input.int(20, "Trade until (UTC hour)", minval=1, maxval=24, group="Risk")
+friCutoff  = input.int(18, "No new trades Friday after (UTC)", group="Risk")
+maxBars    = input.int(96, "Time stop (bars)", group="Risk")
+
+useBO      = input.bool(true, "Asian-range breakout", group="Breakout")
+rStart     = input.int(0, "Range start (UTC)", group="Breakout")
+rEnd       = input.int(7, "Range end (UTC)", group="Breakout")
+tradeEnd   = input.int(13, "Breakout window end (UTC)", group="Breakout")
+bufAtr     = input.float(0.1, "Buffer (ATR)", step=0.05, group="Breakout")
+minWAtr    = input.float(2.0, "Min range width (ATR)", group="Breakout")
+maxWAtr    = input.float(12.0, "Max range width (ATR)", group="Breakout")
+boRR       = input.float(1.5, "Reward:risk", step=0.1, group="Breakout")
+
+useTP      = input.bool(true, "Trend pullback", group="Trend pullback")
+adxMin     = input.float(20, "Min ADX", group="Trend pullback")
+touchAtr   = input.float(0.25, "Pullback touch (ATR)", step=0.05, group="Trend pullback")
+tpSlAtr    = input.float(1.5, "Stop (ATR)", step=0.1, group="Trend pullback")
+tpRR       = input.float(2.0, "Reward:risk", step=0.1, group="Trend pullback")
+
+// ---------------------------------------------------------------- indicators
+a   = ta.atr(14)
+ef  = ta.ema(close, 20)
+em  = ta.ema(close, 50)
+es  = ta.ema(close, 200)
+[diPlus, diMinus, adxV] = ta.dmi(14, 14)
+r   = ta.rsi(close, 14)
+
+// H4 trend from COMPLETED H4 bars only (non-repainting pattern)
+htfC  = request.security(syminfo.tickerid, "240", close[1], lookahead=barmerge.lookahead_on)
+htfE  = request.security(syminfo.tickerid, "240", ta.ema(close, 50)[1], lookahead=barmerge.lookahead_on)
+htfE1 = request.security(syminfo.tickerid, "240", ta.ema(close, 50)[2], lookahead=barmerge.lookahead_on)
+htfUp = htfC > htfE and htfE > htfE1
+htfDn = htfC < htfE and htfE < htfE1
+
+// ---------------------------------------------------------------- Asian range
+hOpen  = hour(time, "UTC")
+hClose = hour(time_close, "UTC")
+newDay = dayofmonth(time, "UTC") != dayofmonth(time[1], "UTC")
+var float rHi = na
+var float rLo = na
+var bool longDone = false
+var bool shortDone = false
+if newDay
+    rHi := na
+    rLo := na
+    longDone := false
+    shortDone := false
+if hOpen >= rStart and hOpen < rEnd
+    rHi := na(rHi) ? high : math.max(rHi, high)
+    rLo := na(rLo) ? low : math.min(rLo, low)
+
+width  = rHi - rLo
+inBO   = hOpen >= rEnd and hOpen < tradeEnd and width >= minWAtr * a and width <= maxWAtr * a
+longBO  = useBO and inBO and close > rHi + bufAtr * a and not longDone and not htfDn
+shortBO = useBO and inBO and close < rLo - bufAtr * a and not shortDone and not htfUp
+if longBO
+    longDone := true
+if shortBO
+    shortDone := true
+
+// ---------------------------------------------------------------- trend pullback
+slope  = es - es[10]
+up     = em > es and close > es and slope > 0 and adxV >= adxMin and htfUp
+dn     = em < es and close < es and slope < 0 and adxV >= adxMin and htfDn
+longPB  = useTP and up and low <= ef + touchAtr * a and close > ef and close > open and r >= 40 and r <= 70
+shortPB = useTP and dn and high >= ef - touchAtr * a and close < ef and close < open and r >= 30 and r <= 60
+
+// ---------------------------------------------------------------- entries (breakout has priority)
+wd        = dayofweek(time_close, "UTC")
+inSession = hClose >= sessStart and hClose < sessEnd and wd != dayofweek.saturday and wd != dayofweek.sunday and
+     not (wd == dayofweek.friday and hClose >= friCutoff)
+goLong  = (longBO or longPB) and not (shortBO or shortPB)
+goShort = (shortBO or shortPB) and not (longBO or longPB)
+boSl    = math.max(math.min(0.5 * width, 3.5 * a), 1.0 * a)
+slDist  = (longBO or shortBO) ? boSl : tpSlAtr * a
+rr      = (longBO or shortBO) ? boRR : tpRR
+qty     = strategy.equity * riskPct / 100 / (slDist * syminfo.pointvalue)
+
+if strategy.position_size == 0 and inSession and not na(slDist) and slDist > 0
+    if goLong
+        strategy.entry("Long", strategy.long, qty=qty)
+        strategy.exit("XL", "Long", stop=close - slDist, limit=close + rr * slDist)
+    else if goShort
+        strategy.entry("Short", strategy.short, qty=qty)
+        strategy.exit("XS", "Short", stop=close + slDist, limit=close - rr * slDist)
+
+// time stop and weekend flat
+barsIn = strategy.position_size != 0 ? bar_index - strategy.opentrades.entry_bar_index(0) : 0
+if strategy.position_size != 0 and (barsIn >= maxBars or (wd == dayofweek.friday and hClose >= 20))
+    strategy.close_all(comment="time/weekend")
+
+// ---------------------------------------------------------------- visuals & alerts
+plot(ef, "EMA20", color=color.new(color.blue, 40))
+plot(em, "EMA50", color=color.new(color.orange, 30))
+plot(es, "EMA200", color=color.new(color.gray, 0), linewidth=2)
+plot(hOpen >= rEnd ? rHi : na, "Asian high", color=color.new(color.teal, 0), style=plot.style_linebr)
+plot(hOpen >= rEnd ? rLo : na, "Asian low", color=color.new(color.teal, 0), style=plot.style_linebr)
+plotshape(goLong and inSession, "Buy signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(goShort and inSession, "Sell signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+alertcondition(goLong and inSession, "TulipAI buy", "TulipAI: BUY signal on {{ticker}} at {{close}}")
+alertcondition(goShort and inSession, "TulipAI sell", "TulipAI: SELL signal on {{ticker}} at {{close}}")

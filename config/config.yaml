@@ -1,0 +1,106 @@
+# TulipAI configuration. Every value below is the built-in default; change what you need.
+# Prices/distances are in price units (USD per ounce). Times are UTC.
+
+account:
+  broker: mt5                 # mt5 = send orders to your MT5 account | paper = MT5 prices, simulated fills
+  allow_real_account: false   # cent accounts are REAL money: set true only after demo testing
+  magic: 26100301             # tags the bot's orders so it never touches your manual trades
+  deviation_points: 50        # max slippage accepted by MT5 market orders
+  comment: TulipAI
+
+symbol:
+  name: auto                  # auto finds XAUUSDc / XAUUSDm / XAUUSD / GOLD on your server
+  timeframe: M15
+  server_utc_offset_hours: auto   # or a number, e.g. 2 (most brokers are UTC+2 winter / UTC+3 summer)
+  history_bars: 6000          # live: bars loaded each step (H4 trend filter needs ~6000 M15 bars)
+  # Contract model for backtests/replays only (live trading reads the real spec from MT5):
+  contract_size: 100.0        # ounces per 1.0 lot
+  value_multiplier: 1.0       # 1.0 for USD accounts and for USC cent accounts (P&L shown in cents)
+  volume_min: 0.01
+  volume_step: 0.01
+  volume_max: 100.0
+
+risk:                         # hard limits - neither the strategies nor Claude can override these
+  risk_per_trade_pct: 1.0     # equity lost if the stop is hit
+  max_daily_loss_pct: 3.0     # no new trades for the rest of the UTC day after this loss
+  max_drawdown_pct: 20.0      # kill switch from peak equity (reset from the panel)
+  max_open_positions: 1
+  max_trades_per_day: 4
+  max_lot: 5.0
+  max_spread: 1.0             # skip entries when the spread is wider (USD)...
+  max_spread_atr: 0.25        # ...or wider than this fraction of ATR
+  min_rr: 1.0                 # minimum reward:risk
+  min_sl_atr: 0.8             # stops are clamped to [min_sl_atr, max_sl_atr] x ATR(14)
+  max_sl_atr: 4.0
+  min_lot_risk_overshoot: 1.5 # allow the minimum lot if it risks at most 1.5x the budget
+  loss_streak_pause: 3        # after 3 losses in a row...
+  cooldown_bars: 8            # ...pause for 8 bars
+  trade_hours_utc: [[7, 20]]  # London open to New York afternoon
+  trade_days: [0, 1, 2, 3, 4] # Monday-Friday
+  friday_cutoff_hour_utc: 18
+  news_blackout_before_min: 30  # no entries 30 min before / after high-impact USD news
+  news_blackout_after_min: 30
+
+management:
+  breakeven_at_r: 1.0         # move stop to entry (+ lock) once the trade is +1R
+  breakeven_lock_r: 0.1
+  trail_start_r: 1.5          # ATR trailing stop once +1.5R
+  trail_atr_mult: 2.0
+  max_bars_in_trade: 96       # time stop (96 x M15 = 24h)
+  close_before_weekend: true
+  weekend_close_hour_utc: 20  # Friday
+
+strategy:
+  name: ensemble              # ensemble | session_breakout | trend_pullback | mean_reversion
+  members: [session_breakout, trend_pullback, mean_reversion]   # priority order
+  params: {}                  # e.g. {trend_pullback: {adx_min: 22, rr: 2.5}} - or use --params from walkforward
+
+ai:
+  mode: filter                # off | filter (Claude approves/vetoes signals) | autonomous (Claude decides)
+  model: claude-opus-5-5
+  effort: medium              # low | medium | high | xhigh | max
+  max_tokens: 16000
+  min_confidence: 0.6         # Claude must be at least this confident to trade
+  max_calls_per_day: 60       # hard cap on API calls (cost control)
+  autonomous_every_bars: 4    # autonomous mode: ask Claude every N bars when flat
+  on_error: skip              # skip = no trade if Claude is unavailable | quant = trade the signal anyway
+  use_fallbacks: true         # server-side fallback model if a request is declined
+  timeout_s: 180.0
+  context_symbols: [DXY, USDX, US10Y, XAGUSD]   # extra markets shown to Claude if your broker has them
+  price_input_per_mtok: 4.0   # only for the cost estimate shown in the panel
+  price_output_per_mtok: 20.0
+
+ml:
+  enabled: false              # train first: tulip train-ml --data ...
+  model_path: models/meta_label.joblib
+  threshold: 0.0              # 0 = use the threshold learnt during training
+
+news:
+  enabled: true
+  calendar_url: https://nfs.faireconomy.media/ff_calendar_thisweek.json
+  calendar_csv: ''            # optional offline calendar for backtests (time,currency,impact,title)
+  currencies: [USD]
+  impacts: [High]
+  feeds:
+    - https://www.fxstreet.com/rss/news
+    - https://www.forexlive.com/feed/news
+    - https://www.investing.com/rss/news_11.rss
+  keywords: [gold, xau, bullion, fed, fomc, powell, inflation, cpi, pce, payroll, nfp, yield, treasur, dollar, dxy,
+             rate cut, rate hike, tariff, war, geopolit, central bank, safe haven, recession]
+  max_headlines: 15
+  refresh_minutes: 30
+  cache_dir: data/cache
+
+backtest:
+  initial_balance: 10000.0    # 10,000 USC = 100 USD on a cent account
+  spread: 0.35
+  slippage: 0.05
+  commission_per_lot: 0.0
+  warmup_bars: 300
+
+live:
+  poll_seconds: 5.0
+  journal_path: runs/journal.db
+  stop_file: STOP             # create this file to pause new entries
+  log_dir: logs
+  panel_port: 8765

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+/*__THEME__*/
+.head { margin-bottom: 16px; }
+.head p { margin: 4px 0 0; }
+.verdict { border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+.verdict b { margin-right: 6px; }
+.section { margin-top: 12px; }
+.notes li { margin: 4px 0; color: var(--text-secondary); }
+.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+.tabs button { font: inherit; font-size: 12px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1 id="title"></h1>
+    <p class="secondary" id="subtitle"></p>
+  </div>
+  <div id="verdict"></div>
+  <div class="grid tiles" id="tiles"></div>
+
+  <div class="card section">
+    <h2>Equity: strategy vs buy &amp; hold gold</h2>
+    <p class="muted" style="font-size:12px;margin:0 0 8px">Buy &amp; hold puts the same starting balance into gold without leverage.</p>
+    <div id="eq"></div>
+  </div>
+
+  <div class="grid two section">
+    <div class="card">
+      <h2>Drawdown from peak (%)</h2>
+      <div id="dd"></div>
+    </div>
+    <div class="card">
+      <h2>Skill or luck? Random-entry benchmark</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 8px" id="rand-sub"></p>
+      <div id="hist"></div>
+    </div>
+  </div>
+
+  <div class="grid two section">
+    <div class="card">
+      <h2>Benchmark comparison</h2>
+      <div class="table-scroll"><table id="t-bench"></table></div>
+    </div>
+    <div class="card">
+      <h2>By strategy</h2>
+      <div class="table-scroll"><table id="t-strat"></table></div>
+    </div>
+  </div>
+
+  <div class="grid two section">
+    <div class="card">
+      <h2>Monthly returns</h2>
+      <div class="table-scroll"><table id="t-month"></table></div>
+    </div>
+    <div class="card">
+      <h2>Exits and blocked signals</h2>
+      <div class="table-scroll"><table id="t-exit"></table></div>
+      <div class="table-scroll" style="margin-top:12px"><table id="t-block"></table></div>
+    </div>
+  </div>
+
+  <div class="card section" id="wf-card">
+    <h2>Walk-forward windows (out-of-sample)</h2>
+    <div class="table-scroll"><table id="t-wf"></table></div>
+  </div>
+
+  <div class="card section">
+    <h2>Trades</h2>
+    <div class="table-scroll table-tall"><table id="t-trades"></table></div>
+  </div>
+
+  <div class="card section">
+    <h2>Read this before trusting the numbers</h2>
+    <ul class="notes" id="notes"></ul>
+  </div>
+</div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+/*__CHARTS__*/
+</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const $ = (id) => document.getElementById(id);
+  const fmt = (v, d = 2) => (v === null || v === undefined || isNaN(v)) ? "-" : TulipCharts.fmt(Number(v), d);
+  const signed = (v, d = 2) => (v === null || v === undefined) ? "-" : (v > 0 ? "+" : v < 0 ? "−" : "") + fmt(Math.abs(v), d);
+  const M = D.metrics, cur = D.currency ? " " + D.currency : "";
+  $("title").textContent = D.title;
+  $("subtitle").textContent = D.subtitle;
+
+  if (D.random && D.random.verdict) {
+    const v = document.createElement("div"); v.className = "verdict";
+    const b = document.createElement("b"); b.textContent = "Verdict:";
+    v.append(b, document.createTextNode(`${D.random.verdict} (p = ${fmt(D.random.p_value, 3)}, beats ${fmt(D.random.strategy_percentile, 0)}% of ${D.random.n_sims} random runs)`));
+    $("verdict").appendChild(v);
+  }
+
+  const tiles = [
+    ["Net profit", `${signed(M.net_profit)}${cur}`, `${signed(M.return_pct)}% return`, M.net_profit],
+    ["Max drawdown", `${fmt(M.max_dd_pct, 1)}%`, `Calmar ${fmt(M.calmar)}`],
+    ["Profit factor", M.profit_factor === null ? "∞" : fmt(M.profit_factor), `win rate ${fmt(M.win_rate, 1)}%`],
+    ["Trades", M.trades, `long ${M.long_trades || 0} · short ${M.short_trades || 0}`],
+    ["Avg R per trade", signed(M.avg_r, 3), `total ${signed(M.total_r, 1)} R`],
+    ["Sharpe", fmt(M.sharpe), `Sortino ${fmt(M.sortino)}`],
+  ];
+  tiles.forEach(([label, value, delta, sign]) => {
+    const c = document.createElement("div"); c.className = "card tile";
+    const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+    const d = document.createElement("div"); d.className = "delta " + (sign === undefined ? "muted" : sign > 0 ? "up" : sign < 0 ? "down" : "muted"); d.textContent = delta;
+    c.append(l, v, d); $("tiles").appendChild(c);
+  });
+
+  function table(el, cols, rows, empty) {
+    el.replaceChildren();
+    const thead = document.createElement("thead"), tr = document.createElement("tr");
+    cols.forEach((c) => { const th = document.createElement("th"); th.textContent = c[0]; tr.appendChild(th); });
+    thead.appendChild(tr); el.appendChild(thead);
+    const tb = document.createElement("tbody");
+    if (!rows.length) { const r = document.createElement("tr"), td = document.createElement("td"); td.colSpan = cols.length; td.className = "muted"; td.textContent = empty || "None."; r.appendChild(td); tb.appendChild(r); }
+    rows.forEach((row) => {
+      const r = document.createElement("tr");
+      cols.forEach((c) => {
+        const td = document.createElement("td"), v = c[1](row);
+        if (v && typeof v === "object") { td.textContent = v.text; td.className = v.cls; } else td.textContent = v;
+        r.appendChild(td);
+      });
+      tb.appendChild(r);
+    });
+    el.appendChild(tb);
+  }
+  const tone = (v, text) => ({ text, cls: v > 0 ? "up" : v < 0 ? "down" : "" });
+
+  function charts() {
+    const series = [{ name: "Strategy", color: "--series-1", points: D.equity }];
+    if (D.buy_hold && D.buy_hold.length) series.push({ name: "Buy & hold gold", color: "--series-2", points: D.buy_hold });
+    TulipCharts.lineChart($("eq"), series, { height: 280, label: "Equity curve, strategy versus buy and hold" });
+    TulipCharts.lineChart($("dd"), [{ name: "Drawdown %", color: "--series-1", points: D.drawdown }], { height: 200, baseline: 0, label: "Drawdown from peak in percent" });
+    if (D.random && D.random.random_nets) {
+      $("rand-sub").textContent = `Net profit of ${D.random.n_sims} runs with random entry times and direction but the same sessions, risk rules, sizing and stop/target geometry. The line marks this strategy.`;
+      TulipCharts.histogram($("hist"), D.random.random_nets, { value: D.random.strategy_net, label: "this strategy" }, { height: 200, label: "Distribution of random-entry results" });
+    } else {
+      $("rand-sub").textContent = D.random && D.random.note ? D.random.note : "Not run (use --mc N).";
+    }
+  }
+  charts();
+  let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(charts, 200); });
+
+  const R = D.random || {};
+  const bh = D.buy_hold && D.buy_hold.length ? D.buy_hold : null;
+  const bhRet = bh ? (bh[bh.length - 1][1] / bh[0][1] - 1) * 100 : null;
+  table($("t-bench"), [["", (r) => r[0]], ["Return %", (r) => r[1] === null ? "-" : tone(r[1], signed(r[1]))], ["Max DD %", (r) => fmt(r[2], 1)]], [
+    ["This strategy", M.return_pct, M.max_dd_pct],
+    ["Buy & hold gold", bhRet, null],
+    ["Random entries (mean)", R.random_return_mean_pct ?? null, R.random_maxdd_mean_pct ?? null],
+  ]);
+  table($("t-strat"), [["Strategy", (r) => r[0]], ["Trades", (r) => r[1].trades], ["Win %", (r) => fmt(r[1].win_rate, 1)],
+    ["Avg R", (r) => signed(r[1].avg_r)], ["P/L", (r) => tone(r[1].pnl, signed(r[1].pnl))]], Object.entries(M.by_strategy || {}));
+  table($("t-month"), [["Month", (r) => r.month], ["Return %", (r) => tone(r.return_pct, signed(r.return_pct))]], D.monthly.slice().reverse());
+  table($("t-exit"), [["Exit reason", (r) => r[0]], ["Count", (r) => r[1]]], Object.entries(M.exit_reasons || {}));
+  table($("t-block"), [["Signal blocked by", (r) => r[0]], ["Count", (r) => r[1]]], Object.entries(D.blocked || {}), "No signals blocked.");
+  if (D.windows && D.windows.length) {
+    table($("t-wf"), [["Test period", (r) => r.test], ["Train trades", (r) => r.train_trades], ["Train avg R", (r) => signed(r.train_avg_r)],
+      ["Test trades", (r) => r.test_trades], ["Test avg R", (r) => tone(r.test_avg_r, signed(r.test_avg_r))],
+      ["Test return %", (r) => tone(r.test_return_pct, signed(r.test_return_pct))], ["Test max DD %", (r) => fmt(r.test_max_dd_pct, 1)]], D.windows);
+  } else $("wf-card").classList.add("hidden");
+  table($("t-trades"), [["Entry (UTC)", (r) => r.entry_time], ["Side", (r) => (r.side > 0 ? "BUY" : "SELL")], ["Strategy", (r) => r.strategy],
+    ["Lots", (r) => r.lots], ["Entry", (r) => fmt(r.entry)], ["Exit", (r) => fmt(r.exit)], ["R", (r) => tone(r.r_multiple, signed(r.r_multiple))],
+    ["P/L", (r) => tone(r.pnl, signed(r.pnl))], ["Reason", (r) => r.exit_reason]], D.trades.slice().reverse());
+  D.notes.forEach((n) => { const li = document.createElement("li"); li.textContent = n; $("notes").appendChild(li); });
+})();
+</script>
+</body>
+</html>

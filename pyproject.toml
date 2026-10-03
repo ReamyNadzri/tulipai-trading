@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tulipai-trading"
+version = "0.1.0"
+description = "Autonomous, risk-guarded AI trading system for gold (XAUUSD) on MetaTrader 5 demo and cent accounts"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.1",
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+mt5 = ["MetaTrader5>=5.0.45; platform_system == 'Windows'"]
+ai = ["anthropic>=1.0"]
+ml = ["scikit-learn>=1.3", "joblib>=1.3"]
+all = [
+    "MetaTrader5>=5.0.45; platform_system == 'Windows'",
+    "anthropic>=1.0",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+]
+dev = ["pytest>=7"]
+
+[project.scripts]
+tulip = "tulipai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tulipai*"]
+
+[tool.setuptools.package-data]
+tulipai = ["panel/*.html", "web/*.html", "web/*.css", "web/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

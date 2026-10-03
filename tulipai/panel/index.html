@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TulipAI Control Panel</title>
+<style>
+/*__THEME__*/
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; }
+.login { max-width: 460px; margin: 24px auto; }
+label { display: block; font-size: 13px; color: var(--text-secondary); margin: 12px 0 4px; }
+input, select {
+  width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-primary); font: inherit;
+}
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.check { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--text-secondary); font-size: 13px; }
+.check input { width: auto; }
+button {
+  font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-primary);
+}
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+button.danger { color: var(--bad-ink); }
+button:disabled { opacity: 0.5; cursor: default; }
+.wide { width: 100%; margin-top: 16px; padding: 11px; }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.spacer { flex: 1; }
+.banner { border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+.banner b { margin-right: 6px; }
+.error { color: var(--bad-ink); font-size: 13px; margin-top: 10px; min-height: 1em; }
+.note { font-size: 12px; color: var(--text-muted); margin-top: 12px; }
+.meter { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; margin: 6px 0 10px; }
+.meter > div { height: 100%; background: var(--accent); border-radius: 4px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+.kv dt { color: var(--text-secondary); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; }
+.reason { font-size: 13px; color: var(--text-primary); white-space: pre-wrap; }
+.section { margin-top: 12px; }
+td.wrap-text { white-space: normal; min-width: 220px; }
+.hero .value .unit { font-size: 18px; font-weight: 500; color: var(--text-secondary); }
+@media (max-width: 480px) { .row2 { grid-template-columns: 1fr; } .hero { grid-column: 1 / -1 !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">T</div>
+      <div><h1>TulipAI</h1><div class="muted" style="font-size:12px">Autonomous gold (XAUUSD) trading</div></div>
+    </div>
+    <div class="pills">
+      <span class="pill" id="p-conn"><span class="dot" style="background:var(--text-muted)"></span><span>Not connected</span></span>
+      <span class="pill hidden" id="p-acct"></span>
+      <span class="pill hidden" id="p-run"></span>
+      <button id="theme" title="Toggle light/dark" aria-label="Toggle light or dark theme">◐</button>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------- login -->
+  <section id="login" class="card login">
+    <h2>Connect MetaTrader 5</h2>
+    <p class="secondary" style="margin:6px 0 0;font-size:13px">Enter the account from your broker's email. TulipAI opens MT5 for you and logs in.</p>
+    <form id="f">
+      <div class="row2">
+        <div><label for="login-id">Login (account number)</label><input id="login-id" inputmode="numeric" autocomplete="username"></div>
+        <div><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+      </div>
+      <label for="server">Server</label>
+      <input id="server" placeholder="e.g. Exness-MT5Trial8" autocomplete="off">
+      <label for="path">MT5 terminal path (optional)</label>
+      <input id="path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe" autocomplete="off">
+      <div class="row2">
+        <div>
+          <label for="broker">Orders</label>
+          <select id="broker">
+            <option value="mt5">Send to MT5 account</option>
+            <option value="paper">Paper (simulate, no orders)</option>
+          </select>
+        </div>
+        <div>
+          <label for="aimode">Claude AI mode</label>
+          <select id="aimode">
+            <option value="filter">Filter: approves signals</option>
+            <option value="autonomous">Autonomous: decides trades</option>
+            <option value="off">Off: rules only</option>
+          </select>
+        </div>
+      </div>
+      <label for="apikey">Claude API key (optional if set in .env)</label>
+      <input id="apikey" type="password" placeholder="sk-ant-..." autocomplete="off">
+      <label class="check"><input type="checkbox" id="remember" checked> Remember login, server and path on this PC</label>
+      <button class="primary wide" id="connect" type="submit">Connect &amp; open MT5</button>
+      <div class="error" id="login-err" role="alert"></div>
+      <p class="note">Leave login, password and server empty to use the account already logged in inside MT5. The password and API key stay in memory and are never saved to disk. The bot refuses to trade a real (including cent) account until <code>allow_real_account</code> is enabled in the config.</p>
+    </form>
+  </section>
+
+  <!-- ------------------------------------------------------------- dashboard -->
+  <section id="dash" class="hidden">
+    <div class="controls">
+      <button class="primary" id="b-start">Start bot</button>
+      <button id="b-pause">Pause new trades</button>
+      <button id="b-stop">Stop bot</button>
+      <button class="danger" id="b-close">Close all positions</button>
+      <span class="spacer"></span>
+      <button id="b-reset" class="hidden">Reset drawdown halt</button>
+      <button id="b-disc">Disconnect</button>
+    </div>
+    <div id="banners"></div>
+
+    <div class="grid tiles">
+      <div class="card tile hero" style="grid-column: span 2">
+        <div class="label">Equity</div>
+        <div class="value" id="k-equity">-</div>
+        <div class="delta" id="k-today">-</div>
+      </div>
+      <div class="card tile"><div class="label">Balance</div><div class="value" id="k-balance">-</div></div>
+      <div class="card tile"><div class="label">Closed trades</div><div class="value" id="k-trades">-</div><div class="delta muted" id="k-wr"></div></div>
+      <div class="card tile"><div class="label">Profit factor</div><div class="value" id="k-pf">-</div><div class="delta muted" id="k-r"></div></div>
+      <div class="card tile"><div class="label">Max drawdown</div><div class="value" id="k-dd">-</div></div>
+      <div class="card tile"><div class="label">Claude calls today</div><div class="value" id="k-ai">-</div><div class="delta muted" id="k-aicost"></div></div>
+    </div>
+
+    <div class="card section">
+      <h2>Equity</h2>
+      <div id="eq-chart"></div>
+    </div>
+
+    <div class="grid two section">
+      <div class="card">
+        <h2>Claude's latest call</h2>
+        <div id="ai-box" class="muted">No AI decision yet.</div>
+      </div>
+      <div class="card">
+        <h2>Guardrails</h2>
+        <dl class="kv" id="risk-box"></dl>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>Open positions</h2>
+      <div class="table-scroll"><table id="t-pos"></table></div>
+    </div>
+
+    <div class="grid two section">
+      <div class="card">
+        <h2>Veto scorecard</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Signals that Claude or the ML filter blocked, scored afterwards as if taken. Negative R means the veto saved money.</p>
+        <div class="table-scroll"><table id="t-veto"></table></div>
+      </div>
+      <div class="card">
+        <h2>By strategy</h2>
+        <div class="table-scroll"><table id="t-strat"></table></div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>Decision log</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 8px">Bars where a strategy fired, Claude was asked, or an order was sent. Quiet bars are hidden.</p>
+      <div class="table-scroll table-tall"><table id="t-dec"></table></div>
+    </div>
+
+    <div class="card section">
+      <h2>Recent trades</h2>
+      <div class="table-scroll"><table id="t-trades"></table></div>
+    </div>
+  </section>
+</div>
+
+<script>
+/*__CHARTS__*/
+</script>
+<script>
+(function () {
+  const TOKEN = "__TOKEN__";
+  const SAVED = __SETTINGS__;
+  const $ = (id) => document.getElementById(id);
+  const fmt = (v, d = 2) => (v === null || v === undefined || v === "" || isNaN(v)) ? "-" : TulipCharts.fmt(Number(v), d);
+  const signed = (v, d = 2) => (v > 0 ? "+" : v < 0 ? "−" : "") + fmt(Math.abs(v), d);
+  let state = null, busy = false;
+
+  async function api(path, body) {
+    const opt = { method: body === undefined ? "GET" : "POST", headers: { "X-Tulip-Token": TOKEN, "Content-Type": "application/json" } };
+    if (body !== undefined) opt.body = JSON.stringify(body);
+    const r = await fetch(path, opt);
+    return r.json();
+  }
+
+  // theme toggle (remembered per browser)
+  try { const t = localStorage.getItem("tulip-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  $("theme").onclick = () => {
+    const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("tulip-theme", next); } catch (e) {}
+    if (state) render(state);
+  };
+
+  // prefill
+  if (SAVED.login) $("login-id").value = SAVED.login;
+  if (SAVED.server) $("server").value = SAVED.server;
+  if (SAVED.path) $("path").value = SAVED.path;
+  if (SAVED.broker) $("broker").value = SAVED.broker;
+  if (SAVED.ai_mode) $("aimode").value = SAVED.ai_mode;
+
+  $("f").onsubmit = async (ev) => {
+    ev.preventDefault();
+    $("connect").disabled = true; $("connect").textContent = "Opening MT5 and logging in...";
+    $("login-err").textContent = "";
+    try {
+      const res = await api("/api/connect", {
+        login: $("login-id").value.trim(), password: $("pw").value, server: $("server").value.trim(),
+        path: $("path").value.trim(), broker: $("broker").value, ai_mode: $("aimode").value,
+        api_key: $("apikey").value.trim(), remember: $("remember").checked,
+      });
+      if (!res.ok) { $("login-err").textContent = res.error || "Connection failed"; }
+      else { $("pw").value = ""; $("apikey").value = ""; await refresh(); }
+    } catch (e) { $("login-err").textContent = "Panel not reachable: " + e; }
+    $("connect").disabled = false; $("connect").textContent = "Connect & open MT5";
+  };
+
+  const act = (path, body, confirmMsg) => async () => {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    if (busy) return; busy = true;
+    try { const r = await api(path, body || {}); if (r && r.ok === false) alert(r.error); } finally { busy = false; }
+    refresh();
+  };
+  $("b-start").onclick = act("/api/start");
+  $("b-stop").onclick = act("/api/stop");
+  $("b-close").onclick = act("/api/close_all", {}, "Close ALL bot positions at market now?");
+  $("b-disc").onclick = act("/api/disconnect");
+  $("b-reset").onclick = act("/api/reset_halt", {}, "Reset the max-drawdown halt and allow trading again?");
+  $("b-pause").onclick = () => act("/api/pause", { paused: !(state && state.paused) })();
+
+  function pill(el, color, text) {
+    el.classList.remove("hidden");
+    el.replaceChildren();
+    const d = document.createElement("span"); d.className = "dot"; d.style.background = color;
+    const t = document.createElement("span"); t.textContent = text;
+    el.append(d, t);
+  }
+
+  function table(el, cols, rows, empty) {
+    el.replaceChildren();
+    const thead = document.createElement("thead"), tr = document.createElement("tr");
+    cols.forEach((c) => { const th = document.createElement("th"); th.textContent = c[0]; tr.appendChild(th); });
+    thead.appendChild(tr); el.appendChild(thead);
+    const tb = document.createElement("tbody");
+    if (!rows.length) {
+      const r = document.createElement("tr"), td = document.createElement("td");
+      td.colSpan = cols.length; td.className = "muted"; td.textContent = empty || "Nothing yet.";
+      r.appendChild(td); tb.appendChild(r);
+    }
+    rows.forEach((row) => {
+      const r = document.createElement("tr");
+      cols.forEach((c) => {
+        const td = document.createElement("td");
+        const v = c[1](row);
+        if (v && typeof v === "object" && v.cls !== undefined) { td.textContent = v.text; td.className = v.cls; }
+        else td.textContent = v;
+        if (c[2]) td.classList.add(c[2]);
+        r.appendChild(td);
+      });
+      tb.appendChild(r);
+    });
+    el.appendChild(tb);
+  }
+  const pnlCell = (v) => ({ text: v === "" || v === null ? "-" : signed(Number(v)), cls: Number(v) > 0 ? "up" : Number(v) < 0 ? "down" : "" });
+  const side = (s) => (Number(s) > 0 ? "BUY" : "SELL");
+  const t16 = (s) => (s ? String(s).replace("T", " ").slice(0, 16) : "-");
+
+  function render(s) {
+    state = s;
+    $("login").classList.toggle("hidden", s.connected);
+    $("dash").classList.toggle("hidden", !s.connected);
+    if (!s.connected) {
+      pill($("p-conn"), "var(--text-muted)", "Not connected");
+      $("p-acct").classList.add("hidden"); $("p-run").classList.add("hidden");
+      return;
+    }
+    const a = s.account || {}, st = s.stats || {}, eng = s.engine || {}, cur = a.currency || "";
+    pill($("p-conn"), "var(--good)", `${s.symbol || ""} ${s.timeframe} · ${s.mode === "paper" ? "paper" : "MT5"}`);
+    pill($("p-acct"), a.is_demo ? "var(--good)" : "var(--critical)", `${a.is_demo ? "DEMO" : "REAL"} ${a.login || ""} · ${a.server || ""}`);
+    pill($("p-run"), s.running ? (s.paused ? "var(--warning)" : "var(--good)") : "var(--text-muted)",
+      s.running ? (s.paused ? "Running · entries paused" : "Running") : "Stopped");
+    $("b-start").disabled = s.running; $("b-stop").disabled = !s.running;
+    $("b-pause").textContent = s.paused ? "Resume new trades" : "Pause new trades";
+    $("b-reset").classList.toggle("hidden", !(s.risk_state && s.risk_state.halted));
+
+    const banners = $("banners"); banners.replaceChildren();
+    const addBanner = (title, text) => {
+      const b = document.createElement("div"); b.className = "banner";
+      const t = document.createElement("b"); t.textContent = title; b.append(t, document.createTextNode(text));
+      banners.appendChild(b);
+    };
+    (eng.warnings || []).forEach((w) => addBanner("Warning:", w));
+    if (eng.error) addBanner("Error:", eng.error);
+    if (s.broker_error) addBanner("Broker:", s.broker_error);
+    if (s.risk_state && s.risk_state.halted) addBanner("Halted:", s.risk_state.halt_reason);
+
+    $("k-equity").replaceChildren(document.createTextNode(fmt(a.equity)));
+    const curEl = document.createElement("span"); curEl.className = "unit"; curEl.textContent = ` ${cur}`;
+    $("k-equity").appendChild(curEl);
+    const today = st.today_pnl || 0;
+    $("k-today").textContent = `${signed(today)} ${cur} today (${st.today_trades || 0} closed trades)`;
+    $("k-today").className = "delta " + (today > 0 ? "up" : today < 0 ? "down" : "muted");
+    $("k-balance").textContent = fmt(a.balance);
+    $("k-trades").textContent = st.trades_total || 0;
+    $("k-wr").textContent = `win rate ${fmt(st.win_rate, 1)}%`;
+    $("k-pf").textContent = st.profit_factor === null ? "∞" : fmt(st.profit_factor);
+    $("k-r").textContent = `avg ${signed(st.avg_r || 0)} R`;
+    $("k-dd").textContent = `${fmt(st.max_dd_pct, 1)}%`;
+    $("k-ai").textContent = st.ai ? st.ai.calls_today : 0;
+    $("k-aicost").textContent = st.ai ? `≈ $${fmt(st.ai.est_cost_today_usd)} today · $${fmt(st.ai.est_cost_total_usd)} total` : "";
+
+    TulipCharts.lineChart($("eq-chart"), [{ name: "Equity", color: "--series-1", points: st.equity_curve || [] }],
+      { height: 240, label: "Account equity over time", empty: "The equity curve appears after the first closed bar." });
+
+    const ai = eng.last_ai, box = $("ai-box");
+    box.replaceChildren();
+    if (!ai) { box.className = "muted"; box.textContent = s.ai_mode === "off" ? "AI mode is off - trading on rules only." : "No AI decision yet. Claude is called when a strategy fires (filter) or on schedule (autonomous)."; }
+    else {
+      box.className = "";
+      const head = document.createElement("div");
+      head.style.cssText = "display:flex;justify-content:space-between;align-items:baseline";
+      const actEl = document.createElement("strong"); actEl.style.fontSize = "20px"; actEl.textContent = ai.action;
+      const when = document.createElement("span"); when.className = "muted"; when.style.fontSize = "12px"; when.textContent = `${t16(ai.time)} UTC · bias ${ai.bias}`;
+      head.append(actEl, when);
+      const conf = document.createElement("div"); conf.className = "muted"; conf.style.fontSize = "12px"; conf.textContent = `confidence ${fmt(ai.confidence * 100, 0)}%`;
+      const meter = document.createElement("div"); meter.className = "meter"; meter.setAttribute("role", "meter");
+      const fill = document.createElement("div"); fill.style.width = `${Math.round(ai.confidence * 100)}%`; meter.appendChild(fill);
+      const reason = document.createElement("div"); reason.className = "reason"; reason.textContent = ai.error ? `Error: ${ai.error}` : ai.reasoning;
+      box.append(head, conf, meter, reason);
+      if (ai.risks && ai.risks.length) {
+        const ul = document.createElement("ul"); ul.style.cssText = "margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--text-secondary)";
+        ai.risks.forEach((r) => { const li = document.createElement("li"); li.textContent = r; ul.appendChild(li); });
+        box.appendChild(ul);
+      }
+    }
+
+    const rs = s.risk_state || {}, kv = $("risk-box"); kv.replaceChildren();
+    const ld = eng.last_decision || {};
+    [["Risk per trade", `${s.risk_pct}% of equity`], ["AI mode", s.ai_mode], ["Trades today", rs.trades_today ?? 0],
+     ["Loss streak", rs.consecutive_losses ?? 0], ["Cooldown until", rs.cooldown_until ? t16(rs.cooldown_until) : "-"],
+     ["Day start equity", fmt(rs.day_start_equity)], ["Peak equity", fmt(rs.peak_equity)],
+     ["Last bar", t16(eng.last_bar)], ["Last decision", ld.action ? `${ld.action} - ${ld.reason || ""}` : "-"],
+     ["Server time", eng.server_time || "-"]].forEach(([k, v]) => {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      kv.append(dt, dd);
+    });
+
+    table($("t-pos"), [["Ticket", (r) => r.ticket], ["Side", (r) => side(r.side)], ["Lots", (r) => r.volume], ["Entry", (r) => fmt(r.entry)],
+      ["SL", (r) => fmt(r.sl)], ["TP", (r) => fmt(r.tp)], ["Opened (UTC)", (r) => t16(r.open_time)], ["P/L", (r) => pnlCell(r.profit)]],
+      s.positions || [], "No open positions.");
+
+    const vrows = Object.entries(st.vetoes || {}).map(([k, v]) => ({ k, ...v }));
+    table($("t-veto"), [["Source", (r) => r.k.replace("_veto", "").toUpperCase()], ["Vetoed", (r) => r.count], ["Scored", (r) => r.resolved],
+      ["Avg R if taken", (r) => (r.avg_r_if_taken === null ? "-" : signed(r.avg_r_if_taken))], ["R saved", (r) => pnlCell(r.total_r_avoided)]],
+      vrows, "No vetoes yet.");
+
+    const srows = Object.entries(st.by_strategy || {}).map(([k, v]) => ({ k, ...v }));
+    table($("t-strat"), [["Strategy", (r) => r.k], ["Trades", (r) => r.trades], ["Win %", (r) => fmt(r.win_rate, 1)],
+      ["Avg R", (r) => signed(r.avg_r)], ["P/L", (r) => pnlCell(r.pnl)]], srows, "No closed trades yet.");
+
+    table($("t-dec"), [["Bar (UTC)", (r) => t16(r.bar_time)], ["Signal", (r) => (r.signal ? `${side(r.signal)} ${r.strategy}` : "-")],
+      ["ML p", (r) => (r.ml_prob === "" ? "-" : fmt(r.ml_prob))], ["Claude", (r) => (r.ai_action ? `${r.ai_action} ${fmt(r.ai_confidence * 100, 0)}%` : "-")],
+      ["Action", (r) => r.final_action], ["Why", (r) => r.reason, "wrap-text"]],
+      (s.decisions || []).slice().reverse(), "Waiting for the first closed bar.");
+
+    table($("t-trades"), [["Opened", (r) => t16(r.open_time)], ["Side", (r) => side(r.side)], ["Strategy", (r) => r.strategy],
+      ["Lots", (r) => r.volume], ["Entry", (r) => fmt(r.entry)], ["Exit", (r) => (r.exit === "" ? "open" : fmt(r.exit))],
+      ["R", (r) => (r.r_multiple === "" ? "-" : signed(r.r_multiple))], ["P/L", (r) => pnlCell(r.pnl)], ["Exit reason", (r) => r.exit_reason || "-"]],
+      (s.trades || []).slice().reverse(), "No trades yet.");
+  }
+
+  async function refresh() {
+    try { render(await api("/api/status")); } catch (e) { /* panel restarting */ }
+  }
+  refresh();
+  setInterval(() => { if (!document.hidden) refresh(); }, 4000);
+  let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => state && render(state), 200); });
+})();
+</script>
+</body>
+</html>

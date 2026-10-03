@@ -278,6 +278,9 @@ def cmd_replay(args) -> int:
     if args.ai:
         from .ai.brain import ClaudeBrain
 
+        if cfg.ai.mode == "off":
+            cfg.ai.mode = "filter"  # --ai means "ask Claude"; the config default is rules only
+
         brain = ClaudeBrain(cfg.ai, cfg.risk, cfg.management, cfg.symbol.timeframe)
     else:
         cfg.ai.mode, brain = "off", None
@@ -324,7 +327,7 @@ def cmd_panel(args) -> int:
 
     cfg = _cfg(args)
     _setup_logging(cfg, args.verbose)
-    serve(cfg, args.port, open_browser=not args.no_browser)
+    serve(cfg, args.port, open_browser=not args.no_browser, forced_ai_mode=args.ai)
     return 0
 
 
@@ -457,6 +460,11 @@ def cmd_research(args) -> int:
     out(f"Signals blocked: {res.blocked}")
     bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
     out(f"Buy & hold gold: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%, Sharpe {bh['sharpe']:.2f})")
+    for side, name in ((1, "long"), (-1, "short")):
+        t = res.trades[res.trades["side"] == side]
+        if len(t):
+            out(f"By direction - {name:<5}: {len(t)} trades, win {100 * (t['pnl'] > 0).mean():.1f}%, "
+                f"avg R {t['r_multiple'].mean():+.3f}, pnl {t['pnl'].sum():+.2f}")
     stress = cfg.copy()
     stress.backtest.slippage = args.stress_slippage
     sres, _, _, _ = _run_backtest(argparse.Namespace(ml=False, calendar=None), stress, df)
@@ -464,11 +472,6 @@ def cmd_research(args) -> int:
     out(f"Cost stress test (slippage {args.stress_slippage} instead of {cfg.backtest.slippage}): net "
         f"{sm['net_profit']:+.2f} ({sm['return_pct']:+.2f}%), avg R {sm['avg_r']:+.3f}, PF "
         f"{'inf' if sm['profit_factor'] == float('inf') else round(sm['profit_factor'], 2)}")
-    for side, name in ((1, "long"), (-1, "short")):
-        t = res.trades[res.trades["side"] == side]
-        if len(t):
-            out(f"  {name:<5}: {len(t)} trades, win {100 * (t['pnl'] > 0).mean():.1f}%, avg R {t['r_multiple'].mean():+.3f}, "
-                f"pnl {t['pnl'].sum():+.2f}")
     rb = None
     if args.mc:
         out(f"Random-entry benchmark ({args.mc} runs)...")

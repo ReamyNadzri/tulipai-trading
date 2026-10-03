@@ -118,7 +118,7 @@ def _verdict(p: float, strat_net: float, n_sims: int) -> str:
         # what make random entries lose, and a smaller loss is not an edge.
         return "NO EDGE: the strategy lost money after costs (beating random entries does not change that)"
     if n_sims < 100:
-        return f"INCONCLUSIVE: only {n_sims} random runs - use at least 200 for a verdict"
+        return f"INCONCLUSIVE: only {n_sims} random runs - use at least 100 (200+ recommended) for a verdict"
     if p <= 0.05:
         return "EDGE: beats >=95% of random-entry runs with identical risk rules"
     if p <= 0.20:

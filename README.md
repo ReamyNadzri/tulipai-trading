@@ -51,7 +51,7 @@ You don't need TeamViewer or remote access. The bot runs on your own PC next to 
 on and awake while it trades, or use a cheap Windows VPS.
 
 **Your password stays on your PC.** It goes only to your MT5 terminal and is never saved to disk.
-"Remember" stores only login, server and path. **Never paste passwords or API keys into chats or GitHub.**
+"Remember" stores only login, server, path and the decision mode. **Never paste passwords or API keys into chats or GitHub.**
 
 ---
 

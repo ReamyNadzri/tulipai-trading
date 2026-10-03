@@ -27,10 +27,14 @@ HERE = Path(__file__).resolve().parent
 SETTINGS = Path("runs/panel_settings.json")
 
 
+SETTINGS_VERSION = 2  # v1 (first release) always saved ai_mode "filter", so its value is ignored
+
+
 class PanelApp:
-    def __init__(self, cfg: Config, port: int):
+    def __init__(self, cfg: Config, port: int, forced_ai_mode: str | None = None):
         self.cfg = cfg
         self.port = port
+        self.forced_ai_mode = forced_ai_mode  # `tulip panel --ai ...` always wins
         self.token = secrets.token_urlsafe(24)
         self.journal = Journal(cfg.live.journal_path)
         self.engine = None
@@ -42,9 +46,21 @@ class PanelApp:
     # ------------------------------------------------------------------ actions
     def saved_settings(self) -> dict:
         try:
-            return json.loads(SETTINGS.read_text(encoding="utf-8"))
+            data = json.loads(SETTINGS.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        if not isinstance(data, dict):
+            return {}
+        if data.get("version", 1) < SETTINGS_VERSION:
+            data.pop("ai_mode", None)
+        return data
+
+    def page_settings(self) -> dict:
+        """Prefill for the login form: config default < saved choice < --ai on the command line."""
+        settings = {"ai_mode": self.cfg.ai.mode, **self.saved_settings()}
+        if self.forced_ai_mode:
+            settings["ai_mode"] = self.forced_ai_mode
+        return settings
 
     def connect(self, body: dict) -> dict:
         from ..ai.brain import ClaudeBrain
@@ -91,8 +107,9 @@ class PanelApp:
             self.engine = engine
             if body.get("remember"):
                 SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-                SETTINGS.write_text(json.dumps({"login": login or "", "server": server or "", "path": path or "",
-                                                "broker": self.mode, "ai_mode": ai_mode}), encoding="utf-8")
+                SETTINGS.write_text(json.dumps({"version": SETTINGS_VERSION, "login": login or "", "server": server or "",
+                                                "path": path or "", "broker": self.mode, "ai_mode": ai_mode}),
+                                    encoding="utf-8")
             return {"ok": True, "account": acct.__dict__, "warnings": engine.status.get("warnings", [])}
 
     @property
@@ -203,8 +220,7 @@ def _page(app: PanelApp) -> bytes:
     html = html.replace("/*__THEME__*/", (WEB / "theme.css").read_text(encoding="utf-8"))
     html = html.replace("/*__CHARTS__*/", (WEB / "charts.js").read_text(encoding="utf-8"))
     html = html.replace("__TOKEN__", app.token)
-    settings = {"ai_mode": app.cfg.ai.mode, **app.saved_settings()}  # config default, unless the user saved a choice
-    html = html.replace("__SETTINGS__", json.dumps(settings).replace("</", "<\\/"))
+    html = html.replace("__SETTINGS__", json.dumps(app.page_settings()).replace("</", "<\\/"))
     return html.encode("utf-8")
 
 
@@ -281,9 +297,9 @@ def make_handler(app: PanelApp):
     return Handler
 
 
-def serve(cfg: Config, port: int | None = None, open_browser: bool = True) -> None:
+def serve(cfg: Config, port: int | None = None, open_browser: bool = True, forced_ai_mode: str | None = None) -> None:
     port = port or cfg.live.panel_port
-    app = PanelApp(cfg, port)
+    app = PanelApp(cfg, port, forced_ai_mode)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app))
     url = f"http://127.0.0.1:{port}/"
     print(f"TulipAI control panel: {url}  (Ctrl+C to quit)")

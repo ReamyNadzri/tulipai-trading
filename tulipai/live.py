@@ -158,14 +158,17 @@ class LiveEngine:
         atr = float(feats.atr(14).iloc[-1])
         bar_spread = float(df["spread"].iloc[-1]) if "spread" in df.columns else tick.spread
 
-        if self.calendar is not None:
-            self.calendar.refresh()  # rate-limited inside; keeps the news status current
-            self.status["news_warning"] = self.calendar.error
-        self._resolve_shadows(df)
-        for p in self.broker.positions():
+        for p in self.broker.positions():  # trade management always runs first
             self._manage(p, df, atr, now, bar_spread)
         self._sync_closed()
         self._save_risk()
+        self._resolve_shadows(df)
+        if self.calendar is not None:
+            try:
+                self.calendar.refresh()  # rate-limited inside; never raises
+            except Exception as exc:  # belt and braces: news must never stop the bot
+                self.calendar.error = f"news calendar error: {exc}"
+            self.status["news_warning"] = self.calendar.error
 
         if self.pause_entries or Path(cfg.live.stop_file).exists():
             self._decide(last_t, final="PAUSED", reason="entries paused (STOP file or panel)")
@@ -349,11 +352,15 @@ class LiveEngine:
         heads = self.headlines.relevant(now) if self.headlines is not None else None
         recent = self.journal.recent_closed_trades(8)
         positions = [p.__dict__ for p in self.broker.positions()]
+        from .strategies.session_breakout import SessionBreakout
+
+        bo = {**SessionBreakout.default_params, **cfg.strategy.params.get("session_breakout", {})}
         context = build_context(
             now=now, symbol=self.broker.symbol, timeframe=cfg.symbol.timeframe, candles=df, feats=feats,
             mode=cfg.ai.mode, signal=intent, ml_prob=ml_prob, spread=tick.spread, account=acct.__dict__,
             positions=positions, risk_state=self.risk.state.to_dict(), events=events, headlines=heads,
             recent_trades=recent, other_markets=self._other_markets(),
+            session_tz=bo["session_tz"], range_hours=(bo["range_start_hour"], bo["range_end_hour"]),
         )
         dec = self.brain.decide(context)
         self.journal.log_ai_call(dec.model or cfg.ai.model, cfg.ai.mode, dec.action, dec.confidence, dec.usage,

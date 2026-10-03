@@ -58,6 +58,8 @@ def build_context(
     headlines: Optional[list[dict]] = None,
     recent_trades: Optional[pd.DataFrame] = None,
     other_markets: Optional[dict[str, pd.DataFrame]] = None,
+    session_tz: str = "Europe/London",
+    range_hours: tuple[int, int] = (0, 8),
 ) -> str:
     c = candles["close"]
     a = float(feats.atr(14).iloc[-1])
@@ -79,13 +81,18 @@ def build_context(
                          f"({(r.close / r.open - 1) * 100:+.2f}%)")
 
     today = candles[candles.index >= now.normalize()]
-    asia = today[today.index.hour < 7]
+    # Same definition as the session_breakout strategy: overnight range in London local time.
+    local = candles.index.tz_convert(session_tz)
+    local_today = (now - feats.bar).tz_convert(session_tz).date()
+    in_range = (local.date == local_today) & (local.hour >= range_hours[0]) & (local.hour < range_hours[1])
+    asia = candles[in_range]
     per_day = int(pd.Timedelta(days=1) / feats.bar)
     lvl = [f"20-day high {candles['high'].tail(20 * per_day).max():.2f} / low {candles['low'].tail(20 * per_day).min():.2f}"]
     if len(today):
         lvl.append(f"today high {today['high'].max():.2f} / low {today['low'].min():.2f}")
     if len(asia):
-        lvl.append(f"Asian range {asia['low'].min():.2f}-{asia['high'].max():.2f}")
+        lvl.append(f"Asian range (London {range_hours[0]:02d}:00-{range_hours[1]:02d}:00) "
+                   f"{asia['low'].min():.2f}-{asia['high'].max():.2f}")
     if len(day) >= 2:
         y = day.iloc[-2]
         lvl.append(f"yesterday H {y.high:.2f} L {y.low:.2f} C {y.close:.2f}")

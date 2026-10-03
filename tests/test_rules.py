@@ -164,3 +164,115 @@ def test_cli_ai_override(tmp_path, monkeypatch):
     assert cli._cfg(args).ai.mode == "filter"
     args = cli.build_parser().parse_args(["live"])
     assert cli._cfg(args).ai.mode == "off"
+
+
+# ---------------------------------------------------------------------------- review regressions
+class _Resp:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.payload
+
+
+@pytest.mark.parametrize("payload", [True, 5, None, "garbage", {"error": "rate limited"}, [{"no": "date"}]])
+def test_malformed_feed_never_raises_or_overwrites_cache(tmp_path, monkeypatch, payload):
+    good = [{"title": "Retail Sales", "country": "USD", "date": "2026-10-15T08:30:00-04:00", "impact": "High"}]
+    (tmp_path / "calendar.json").write_text(json.dumps(good))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(payload))
+    cal = EconomicCalendar(NewsConfig(cache_dir=str(tmp_path)))
+    cal.refresh(force=True)
+    assert "unexpected reply" in cal.error and "cached" in cal.error
+    assert json.loads((tmp_path / "calendar.json").read_text()) == good  # good cache kept
+    assert "Retail Sales" in cal.blackout(T("2026-10-15 12:20"), 30, 30)
+
+
+def test_cache_write_failure_never_raises(tmp_path, monkeypatch):
+    (tmp_path / "calendar.json").mkdir()  # writing the cache file will fail
+    feed = [{"title": "CPI m/m", "country": "USD", "date": "2026-10-14T08:30:00-04:00", "impact": "High"}]
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(feed))
+    cal = EconomicCalendar(NewsConfig(cache_dir=str(tmp_path)))
+    cal.refresh(force=True)
+    assert cal.error == "" and "CPI" in cal.blackout(T("2026-10-14 12:20"), 30, 30)
+
+
+def test_outage_message_reflects_real_builtin_coverage():
+    cal = EconomicCalendar(NewsConfig())
+    assert cal.builtin_coverage(T("2026-10-03")) == "built-in US schedule still covers NFP, CPI, FOMC"
+    assert "(not CPI)" in cal.builtin_coverage(T("2026-12-20"))
+    assert "expired" in cal.builtin_coverage(T("2028-02-01"))
+
+
+def test_nfp_estimate_reproduces_published_2026_dates():
+    from tulipai.news.calendar import _NFP, estimated_nfp_date
+
+    for d in _NFP[2:]:  # Jan/Feb 2026 were shifted by the 2025 government shutdown
+        ts = pd.Timestamp(d)
+        assert estimated_nfp_date(ts.year, ts.month) == ts, d
+    assert estimated_nfp_date(2027, 1) == pd.Timestamp("2027-01-08")  # not New Year's Day
+    assert estimated_nfp_date(2027, 10) == pd.Timestamp("2027-10-08")
+
+
+def test_news_failure_cannot_stop_trade_management(cfg, tmp_path):
+    """Even if the calendar blows up on every bar, stops must still be managed."""
+    from tulipai.journal import Journal
+    from tulipai.live import LiveEngine
+
+    class BrokenCalendar:
+        error = ""
+
+        def refresh(self):
+            raise OSError("disk full")
+
+        def blackout(self, *a):
+            return None
+
+    df = synthetic_gold(days=70, seed=21)
+    cfg.symbol.history_bars = 2500
+    cfg.symbol.server_utc_offset_hours = 2
+    fake = FakeMT5(df, start_index=2600)
+    eng = LiveEngine(cfg, MT5Broker(cfg, mt5_module=fake), Journal(tmp_path / "j.db"), calendar=BrokenCalendar())
+    eng.start()
+    for _ in range(500):
+        eng.step()  # must not raise
+        if not fake.advance():
+            break
+    assert "disk full" in eng.status["news_warning"]
+    assert any(r["action"] == fake.TRADE_ACTION_SLTP for r in fake.requests)  # break-even/trailing still happened
+    assert len(eng.journal.frame("trades")) >= 2
+
+
+def test_replay_ai_flag_turns_claude_on(tmp_path, monkeypatch):
+    from tulipai import cli
+    import tulipai.live as live
+
+    seen = {}
+
+    def fake_run_replay(df, cfg, path, brain=None, progress=False, **kw):
+        seen["mode"], seen["brain"] = cfg.ai.mode, brain
+        raise SystemExit(0)
+
+    monkeypatch.setattr(live, "run_replay", fake_run_replay)
+    monkeypatch.chdir(tmp_path)
+    from tulipai.data.io import save_csv
+
+    save_csv(synthetic_gold(days=30, seed=1), tmp_path / "d.csv")
+    with pytest.raises(SystemExit):
+        cli.main(["replay", "--data", str(tmp_path / "d.csv"), "--ai", "--journal", str(tmp_path / "r.db")])
+    assert seen["mode"] == "filter" and seen["brain"] is not None
+
+
+def test_panel_ignores_old_saved_mode_and_cli_ai_wins(cfg, tmp_path, monkeypatch):
+    from tulipai.panel import server
+
+    settings = tmp_path / "s.json"
+    monkeypatch.setattr(server, "SETTINGS", settings)
+    cfg.live.journal_path = str(tmp_path / "p.db")
+    settings.write_text(json.dumps({"login": "1", "ai_mode": "filter"}))  # saved by the first release
+    assert server.PanelApp(cfg, 8799).page_settings()["ai_mode"] == "off"
+    settings.write_text(json.dumps({"version": 2, "ai_mode": "filter"}))  # an explicit, current choice
+    assert server.PanelApp(cfg, 8799).page_settings()["ai_mode"] == "filter"
+    assert server.PanelApp(cfg, 8799, forced_ai_mode="off").page_settings()["ai_mode"] == "off"

@@ -17,15 +17,16 @@ from .config import Config, load_config
 DEFAULT_CONFIG = "config/config.yaml"
 
 NOTES = [
-    "Backtests are estimates. Real fills, spreads around news, swaps and broker outages will differ; demo-trade "
-    "for several weeks and compare the live journal with this report before risking money.",
+    "Backtests are estimates. Costs modelled: spread (MT5 per-bar spread, floored at backtest.spread), slippage "
+    "and overnight swap. Real fills around news and broker outages will differ; demo-trade for several weeks and "
+    "compare the live journal with this report before risking money.",
     "Only the walk-forward (out-of-sample) numbers are an honest estimate of future performance. In-sample "
     "results after optimisation are always too optimistic.",
     "The random-entry benchmark answers 'is this skill or luck?'. A profitable strategy that does not beat most "
     "random runs has no demonstrated edge.",
-    "Claude's decisions cannot be backtested honestly: the model has read about historical gold prices, so a "
-    "historical test would leak hindsight. The AI layer is evaluated forward-only through the live journal and "
-    "the veto scorecard.",
+    "With ai.mode off (the default) this backtest runs exactly the logic the live bot runs, except the news "
+    "blackout unless a calendar CSV is given. The optional Claude layer cannot be backtested honestly (the model "
+    "has read about historical gold prices) and is judged forward-only via the veto scorecard.",
 ]
 
 
@@ -60,6 +61,8 @@ def _cfg(args) -> Config:
     if path is None and Path(DEFAULT_CONFIG).exists():
         path = DEFAULT_CONFIG
     cfg = load_config(path)
+    if getattr(args, "ai", None) in ("off", "filter", "autonomous"):
+        cfg.ai.mode = args.ai
     if getattr(args, "params", None):
         import yaml
 
@@ -103,8 +106,12 @@ def cmd_doctor(args) -> int:
             ok = ok and mod not in ("numpy", "pandas", "yaml")
     from .ai.brain import ClaudeBrain
 
-    ai_ok, why = ClaudeBrain.available()
-    print(f"  Claude API: {'ready' if ai_ok else why}; ai.mode = {cfg.ai.mode}, model = {cfg.ai.model}")
+    if cfg.ai.mode == "off":
+        print("  Decisions: rules only (ai.mode: off) - no API key needed")
+    else:
+        ai_ok, why = ClaudeBrain.available()
+        print(f"  Decisions: rules + Claude ({cfg.ai.mode}, {cfg.ai.model}); "
+              f"{'API ready' if ai_ok else 'Claude will be skipped: ' + why}")
     print(f"  Risk: {cfg.risk.risk_per_trade_pct}% per trade, daily loss cap {cfg.risk.max_daily_loss_pct}%, "
           f"drawdown kill switch {cfg.risk.max_drawdown_pct}%, real accounts allowed: {cfg.account.allow_real_account}")
     if args.mt5:
@@ -207,7 +214,7 @@ def cmd_backtest(args) -> int:
         page = build_report(res, f"TulipAI backtest - {Path(args.data).name}",
                             f"{df.index[start]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d} · {cfg.symbol.timeframe} · "
                             f"{strat.describe()} · risk {cfg.risk.risk_per_trade_pct}%/trade · spread "
-                            f"{cfg.backtest.spread} · AI not included (see notes)",
+                            f"{cfg.backtest.spread} · rules only",
                             buy_hold=bh_eq, random_bench=rb, notes=NOTES)
         print(f"Report: {write_report(args.report, page)}")
     return 0
@@ -298,7 +305,8 @@ def cmd_live(args) -> int:
     brain = ClaudeBrain(cfg.ai, cfg.risk, cfg.management, cfg.symbol.timeframe) if cfg.ai.mode != "off" else None
     eng = LiveEngine(cfg, broker, Journal(cfg.live.journal_path), brain=brain,
                      calendar=EconomicCalendar(cfg.news) if cfg.news.enabled else None,
-                     headlines=HeadlineFeed(cfg.news) if cfg.news.enabled else None, ml=_load_ml(cfg),
+                     headlines=HeadlineFeed(cfg.news) if cfg.news.enabled and brain is not None else None,
+                     ml=_load_ml(cfg),
                      mode_label="paper" if broker is not mt5b else "mt5")
     eng.start()
     print(f"Running. Create a file named '{cfg.live.stop_file}' to pause new entries; Ctrl+C to stop.")
@@ -411,6 +419,17 @@ def cmd_research(args) -> int:
             out(f"Sizing check: a $10 stop on 0.01 lot loses {lpl / 100:.2f} {acct.currency}")
         except Exception as exc:  # pragma: no cover - depends on the broker
             out(f"Tick unavailable: {exc}")
+        try:
+            swl, sws, how = b.swap_per_lot_night()
+            if swl is not None:
+                cfg.backtest.swap_long, cfg.backtest.swap_short = float(swl), float(sws)
+                out(f"Overnight swap per 1.0 lot: long {swl:+.2f} / short {sws:+.2f} {acct.currency} ({how}) - used in "
+                    "the backtests below")
+            else:
+                out(f"Overnight swap: {how}; using config values long {cfg.backtest.swap_long} / short "
+                    f"{cfg.backtest.swap_short}")
+        except Exception as exc:  # pragma: no cover - depends on the broker
+            out(f"Swap info unavailable ({exc}); using config values")
         end = pd.Timestamp(args.end, tz="UTC") if args.end else pd.Timestamp.now(tz="UTC")
         df = b.history(pd.Timestamp(args.start, tz="UTC"), end, cfg.symbol.timeframe)
         b.shutdown()
@@ -438,6 +457,18 @@ def cmd_research(args) -> int:
     out(f"Signals blocked: {res.blocked}")
     bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
     out(f"Buy & hold gold: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%, Sharpe {bh['sharpe']:.2f})")
+    stress = cfg.copy()
+    stress.backtest.slippage = args.stress_slippage
+    sres, _, _, _ = _run_backtest(argparse.Namespace(ml=False, calendar=None), stress, df)
+    sm = sres.metrics()
+    out(f"Cost stress test (slippage {args.stress_slippage} instead of {cfg.backtest.slippage}): net "
+        f"{sm['net_profit']:+.2f} ({sm['return_pct']:+.2f}%), avg R {sm['avg_r']:+.3f}, PF "
+        f"{'inf' if sm['profit_factor'] == float('inf') else round(sm['profit_factor'], 2)}")
+    for side, name in ((1, "long"), (-1, "short")):
+        t = res.trades[res.trades["side"] == side]
+        if len(t):
+            out(f"  {name:<5}: {len(t)} trades, win {100 * (t['pnl'] > 0).mean():.1f}%, avg R {t['r_multiple'].mean():+.3f}, "
+                f"pnl {t['pnl'].sum():+.2f}")
     rb = None
     if args.mc:
         out(f"Random-entry benchmark ({args.mc} runs)...")
@@ -513,7 +544,7 @@ def cmd_demo(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="tulip", description="TulipAI - autonomous AI gold trading on MT5")
+    p = argparse.ArgumentParser(prog="tulip", description="TulipAI - autonomous gold trading on MT5 (rules first, AI optional)")
     p.add_argument("--config", default=None, help=f"YAML config (default: {DEFAULT_CONFIG} if present)")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -569,11 +600,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("live", help="run the bot headless (credentials from .env)")
     s.add_argument("--paper", action="store_true", help="simulate fills, send no orders")
+    s.add_argument("--ai", choices=["off", "filter", "autonomous"], help="override ai.mode from the config")
     s.set_defaults(fn=cmd_live)
 
     s = sub.add_parser("panel", help="open the browser control panel (login + dashboard)")
     s.add_argument("--port", type=int)
     s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--ai", choices=["off", "filter", "autonomous"], help="default decision mode shown in the panel")
     s.set_defaults(fn=cmd_panel)
 
     s = sub.add_parser("report", help="HTML report from the live journal")
@@ -593,7 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--end")
     s.add_argument("--data", help="use this CSV instead of downloading from MT5")
     s.add_argument("--out", default="data/xauusd_m15.csv")
-    s.add_argument("--mc", type=int, default=200)
+    s.add_argument("--mc", type=int, default=500)
+    s.add_argument("--stress-slippage", type=float, default=0.30, help="slippage for the cost stress test")
     s.add_argument("--train-months", type=int, default=6)
     s.add_argument("--test-months", type=int, default=1)
     s.add_argument("--max-combos", type=int, default=27)

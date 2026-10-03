@@ -93,7 +93,8 @@ def test_random_benchmark_runs(gold_df, cfg):
     f = Features(gold_df)
     res = Backtester(cfg).run(gold_df, build_strategy(cfg.strategy).generate(f), start=300, features=f)
     rb = random_entry_benchmark(gold_df, cfg, res, n_sims=8, start=300, features=f)
-    assert rb["n_sims"] == 8 and 0 < rb["p_value"] <= 1 and "EDGE" in rb["verdict"]
+    assert rb["n_sims"] == 8 and 0 < rb["p_value"] <= 1
+    assert rb["verdict"].startswith(("NO EDGE", "INCONCLUSIVE"))  # 8 runs are never enough for an EDGE call
 
 
 def test_live_engine_replay_matches_backtester(cfg, tmp_path):

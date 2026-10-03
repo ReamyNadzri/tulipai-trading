@@ -3,6 +3,9 @@
 Gold ranges during the Asian session and frequently picks a direction when London
 liquidity arrives. We mark the Asian high/low, then take the FIRST close beyond it (plus a
 buffer) during the London morning, in the direction allowed by the H4 trend.
+
+Session hours are London local time, so the window follows UK daylight saving: London opens
+at 08:00 local = 07:00 UTC in summer and 08:00 UTC in winter.
 """
 
 from __future__ import annotations
@@ -16,9 +19,10 @@ from .base import Strategy
 class SessionBreakout(Strategy):
     name = "session_breakout"
     default_params = {
-        "range_start_hour": 0,
-        "range_end_hour": 7,
-        "trade_end_hour": 13,
+        "session_tz": "Europe/London",
+        "range_start_hour": 0,  # local hours in session_tz
+        "range_end_hour": 8,
+        "trade_end_hour": 14,
         "buffer_atr": 0.1,
         "min_width_atr": 2.0,
         "max_width_atr": 12.0,
@@ -30,7 +34,7 @@ class SessionBreakout(Strategy):
         "atr_n": 14,
     }
     param_grid = {
-        "range_end_hour": [6, 7, 8],
+        "range_end_hour": [7, 8, 9],
         "buffer_atr": [0.0, 0.1, 0.25],
         "rr": [1.2, 1.5, 2.0],
     }
@@ -43,8 +47,8 @@ class SessionBreakout(Strategy):
         p = self.params
         h, l, c = f.high, f.low, f.close
         a = f.atr(p["atr_n"])
-        hour = f.hour()
-        day = f.day()
+        hour = f.local_hour(p["session_tz"])
+        day = f.local_day(p["session_tz"])
 
         in_range = (hour >= p["range_start_hour"]) & (hour < p["range_end_hour"])
         rng_hi = h.where(in_range).groupby(day).transform("max")

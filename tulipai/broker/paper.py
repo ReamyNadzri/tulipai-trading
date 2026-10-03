@@ -12,6 +12,7 @@ from typing import Optional
 import pandas as pd
 
 from ..config import Config
+from ..execution import swap_money
 from .base import AccountInfo, Broker, BrokerPosition, ClosedTrade, OrderResult, SymbolSpec, Tick
 
 
@@ -63,6 +64,8 @@ class PaperBroker(Broker):
         if p is None:
             return
         pnl = self._pnl(p.side, p.entry, price, p.volume)
+        bt = self.cfg.backtest
+        pnl += swap_money(p.side, p.volume, p.open_time, when, bt.swap_long, bt.swap_short)
         self.balance += pnl
         self._closed[ticket] = ClosedTrade(ticket, price, when, pnl, reason)
 

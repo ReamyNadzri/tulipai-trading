@@ -56,7 +56,7 @@ strategy:
   params: {}                  # e.g. {trend_pullback: {adx_min: 22, rr: 2.5}} - or use --params from walkforward
 
 ai:
-  mode: filter                # off | filter (Claude approves/vetoes signals) | autonomous (Claude decides)
+  mode: 'off'                 # 'off' = rules only (default) | filter (Claude approves/vetoes) | autonomous (Claude decides)
   model: claude-opus-5-5
   effort: medium              # low | medium | high | xhigh | max
   max_tokens: 16000
@@ -96,6 +96,8 @@ backtest:
   spread: 0.35                # USD; also the floor under MT5's per-bar spread
   slippage: 0.05
   commission_per_lot: 0.0
+  swap_long: -60.0            # overnight fee per 1.0 lot per night (Wednesday x3); research reads your broker's
+  swap_short: -10.0
   warmup_bars: 300
 
 live:

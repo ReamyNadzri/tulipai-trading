@@ -108,11 +108,17 @@ def random_entry_benchmark(
         "strategy_percentile": float((nets < strat_net).mean() * 100),
         "p_value": float(p_value),
         "random_nets": nets.tolist(),
-        "verdict": _verdict(p_value),
+        "verdict": _verdict(p_value, strat_net, n_sims),
     }
 
 
-def _verdict(p: float) -> str:
+def _verdict(p: float, strat_net: float, n_sims: int) -> str:
+    if strat_net <= 0:
+        # Beating random entries is meaningless if the strategy still loses money: costs are
+        # what make random entries lose, and a smaller loss is not an edge.
+        return "NO EDGE: the strategy lost money after costs (beating random entries does not change that)"
+    if n_sims < 100:
+        return f"INCONCLUSIVE: only {n_sims} random runs - use at least 200 for a verdict"
     if p <= 0.05:
         return "EDGE: beats >=95% of random-entry runs with identical risk rules"
     if p <= 0.20:

@@ -135,6 +135,14 @@ class Features:
     def day(self) -> pd.DatetimeIndex:
         return self._memo("day", lambda: self.index.normalize())
 
+    def local_hour(self, tz: str) -> np.ndarray:
+        """Hour of each bar's open in a market time zone (DST-aware, e.g. Europe/London)."""
+        return self._memo(("local_hour", tz), lambda: np.asarray(self.index.tz_convert(tz).hour))
+
+    def local_day(self, tz: str) -> pd.Index:
+        """Calendar date of each bar in a market time zone, for per-session grouping."""
+        return self._memo(("local_day", tz), lambda: pd.Index(self.index.tz_convert(tz).date))
+
     def htf_ema_slope(self, tf: str = "H4", n: int = 50) -> pd.Series:
         """+1/-1/0 trend of an EMA on a higher timeframe, using ONLY completed HTF bars.
 

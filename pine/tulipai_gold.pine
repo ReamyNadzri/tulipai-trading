@@ -3,7 +3,8 @@
 // SEE the signals on your chart and cross-check results in TradingView's Strategy Tester.
 // It is a visual aid: break-even/trailing management, news blackout, Claude and the ML
 // filter only exist in the Python bot, so numbers will not match the bot exactly.
-// Use on XAUUSD M15. All session times are UTC.
+// Use on XAUUSD M15. Trading-hour inputs are UTC; the Asian range / London window uses London
+// local time, so it follows UK daylight saving exactly like the bot.
 //@version=5
 strategy("TulipAI Gold (breakout + trend pullback)", overlay=true, initial_capital=10000, pyramiding=0,
      default_qty_type=strategy.fixed, slippage=5, commission_type=strategy.commission.percent, commission_value=0.0)
@@ -16,9 +17,9 @@ friCutoff  = input.int(18, "No new trades Friday after (UTC)", group="Risk")
 maxBars    = input.int(96, "Time stop (bars)", group="Risk")
 
 useBO      = input.bool(true, "Asian-range breakout", group="Breakout")
-rStart     = input.int(0, "Range start (UTC)", group="Breakout")
-rEnd       = input.int(7, "Range end (UTC)", group="Breakout")
-tradeEnd   = input.int(13, "Breakout window end (UTC)", group="Breakout")
+rStart     = input.int(0, "Range start (London time)", group="Breakout")
+rEnd       = input.int(8, "Range end = London open (London time)", group="Breakout")
+tradeEnd   = input.int(14, "Breakout window end (London time)", group="Breakout")
 bufAtr     = input.float(0.1, "Buffer (ATR)", step=0.05, group="Breakout")
 minWAtr    = input.float(2.0, "Min range width (ATR)", group="Breakout")
 maxWAtr    = input.float(12.0, "Max range width (ATR)", group="Breakout")
@@ -46,9 +47,9 @@ htfUp = htfC > htfE and htfE > htfE1
 htfDn = htfC < htfE and htfE < htfE1
 
 // ---------------------------------------------------------------- Asian range
-hOpen  = hour(time, "UTC")
+hOpen  = hour(time, "Europe/London")
 hClose = hour(time_close, "UTC")
-newDay = dayofmonth(time, "UTC") != dayofmonth(time[1], "UTC")
+newDay = dayofmonth(time, "Europe/London") != dayofmonth(time[1], "Europe/London")
 var float rHi = na
 var float rLo = na
 var bool longDone = false

@@ -80,7 +80,7 @@ class PanelApp:
                 if ai_mode != "off":
                     brain = ClaudeBrain(cfg.ai, cfg.risk, cfg.management, cfg.symbol.timeframe)
                 calendar = EconomicCalendar(cfg.news) if cfg.news.enabled else None
-                headlines = HeadlineFeed(cfg.news) if cfg.news.enabled else None
+                headlines = HeadlineFeed(cfg.news) if cfg.news.enabled and brain is not None else None  # Claude only
                 ml = _load_ml(cfg)
                 engine = LiveEngine(cfg, broker, self.journal, brain=brain, calendar=calendar, headlines=headlines,
                                     ml=ml, mode_label=self.mode)
@@ -158,7 +158,8 @@ class PanelApp:
 
     def status(self) -> dict:
         eng = self.engine
-        out = {"connected": eng is not None, "running": self.running, "mode": self.mode, "ai_mode": self.cfg.ai.mode,
+        ai_mode = eng.status.get("ai_mode", self.cfg.ai.mode) if eng is not None else self.cfg.ai.mode  # what really runs
+        out = {"connected": eng is not None, "running": self.running, "mode": self.mode, "ai_mode": ai_mode,
                "risk_pct": self.cfg.risk.risk_per_trade_pct, "timeframe": self.cfg.symbol.timeframe}
         if eng is not None:
             acct = eng.account_info
@@ -202,7 +203,8 @@ def _page(app: PanelApp) -> bytes:
     html = html.replace("/*__THEME__*/", (WEB / "theme.css").read_text(encoding="utf-8"))
     html = html.replace("/*__CHARTS__*/", (WEB / "charts.js").read_text(encoding="utf-8"))
     html = html.replace("__TOKEN__", app.token)
-    html = html.replace("__SETTINGS__", json.dumps(app.saved_settings()).replace("</", "<\\/"))
+    settings = {"ai_mode": app.cfg.ai.mode, **app.saved_settings()}  # config default, unless the user saved a choice
+    html = html.replace("__SETTINGS__", json.dumps(settings).replace("</", "<\\/"))
     return html.encode("utf-8")
 
 

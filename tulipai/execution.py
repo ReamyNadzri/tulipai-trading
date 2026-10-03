@@ -8,7 +8,12 @@ target we assume the stop came first (pessimistic).
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import numpy as np
+import pandas as pd
+
+NY = "America/New_York"
 
 
 def spread_array(df, floor: float) -> np.ndarray:
@@ -20,6 +25,29 @@ def spread_array(df, floor: float) -> np.ndarray:
     if "spread" in df.columns:
         return np.maximum(df["spread"].to_numpy(dtype=float), floor)
     return np.full(len(df), float(floor))
+
+
+def rollover_nights(entry_time: pd.Timestamp, exit_time: pd.Timestamp) -> float:
+    """How many daily rollovers (17:00 New York) a position was held across, weighted the
+    way brokers charge overnight swap: the Wednesday rollover counts 3x to cover the weekend."""
+    if exit_time <= entry_time:
+        return 0.0
+    a, b = entry_time.tz_convert(NY), exit_time.tz_convert(NY)
+    nights, day = 0.0, a.date()
+    while day <= b.date():
+        if day.weekday() < 5:
+            roll = pd.Timestamp(day).replace(hour=17).tz_localize(NY)
+            if a < roll < b:
+                nights += 3.0 if day.weekday() == 2 else 1.0
+        day += timedelta(days=1)
+    return nights
+
+
+def swap_money(side: int, lots: float, entry_time: pd.Timestamp, exit_time: pd.Timestamp,
+               swap_long: float, swap_short: float) -> float:
+    """Overnight financing for a closed position, account currency (negative = cost)."""
+    nights = rollover_nights(entry_time, exit_time)
+    return (swap_long if side > 0 else swap_short) * lots * nights if nights else 0.0
 
 
 def entry_fill(side: int, bid_open: float, spread: float, slippage: float) -> float:

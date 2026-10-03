@@ -86,7 +86,8 @@ class LiveEngine:
                 warnings.append(f"AI disabled: {why}")
                 self.brain = None
         self.status.update(state="running", warnings=warnings, symbol=self.broker.symbol,
-                           server_time=getattr(self.broker, "offset_note", ""))
+                           server_time=getattr(self.broker, "offset_note", ""),
+                           ai_mode=self.cfg.ai.mode if self.brain is not None else "off")
         for w in warnings:
             log.warning(w)
         self._reconcile()
@@ -157,6 +158,9 @@ class LiveEngine:
         atr = float(feats.atr(14).iloc[-1])
         bar_spread = float(df["spread"].iloc[-1]) if "spread" in df.columns else tick.spread
 
+        if self.calendar is not None:
+            self.calendar.refresh()  # rate-limited inside; keeps the news status current
+            self.status["news_warning"] = self.calendar.error
         self._resolve_shadows(df)
         for p in self.broker.positions():
             self._manage(p, df, atr, now, bar_spread)
@@ -274,7 +278,6 @@ class LiveEngine:
         positions = self.broker.positions()
         news = None
         if self.calendar is not None:
-            self.calendar.refresh()
             news = self.calendar.blackout(now, cfg.risk.news_blackout_before_min, cfg.risk.news_blackout_after_min)
         ok, why = self.risk.can_open(now, acct.equity, len(positions), tick.spread, atr, news)
         strategy = str(row["strategy"]) if signal else ""

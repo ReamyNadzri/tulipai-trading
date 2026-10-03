@@ -11,7 +11,7 @@ from typing import Optional
 import pandas as pd
 
 from ..config import Config
-from ..execution import check_exit, entry_fill, exit_fill_market, money, spread_array
+from ..execution import check_exit, entry_fill, exit_fill_market, money, spread_array, swap_money
 from .base import AccountInfo, Broker, BrokerPosition, ClosedTrade, OrderResult, SymbolSpec, Tick
 
 
@@ -49,6 +49,8 @@ class ReplayBroker(Broker):
     def _finish(self, ticket: int, price: float, when: pd.Timestamp, reason: str) -> None:
         p = self._pos.pop(ticket)
         pnl = money(p.side, p.entry, price, p.volume, self.cs, self.vm, self.comm)
+        bt = self.cfg.backtest
+        pnl += swap_money(p.side, p.volume, p.open_time, when, bt.swap_long, bt.swap_short)
         self.balance += pnl
         self._closed[ticket] = ClosedTrade(ticket, price, when, pnl, reason)
 

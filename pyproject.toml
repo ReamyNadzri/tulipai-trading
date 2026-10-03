@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tulipai-trading"
 version = "0.1.0"
-description = "Autonomous, risk-guarded AI trading system for gold (XAUUSD) on MetaTrader 5 demo and cent accounts"
+description = "Autonomous, risk-guarded rule-based trading for gold (XAUUSD) on MetaTrader 5, with an optional AI layer"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

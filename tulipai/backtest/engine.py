@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 
 from ..config import Config
-from ..execution import check_exit, entry_fill, exit_fill_market, initial_levels, money, spread_array
+from ..execution import (check_exit, entry_fill, exit_fill_market, initial_levels, money, spread_array,
+                         swap_money)
 from ..indicators import Features
 from ..management import manage_position
 from ..risk import RiskManager, in_blackout
@@ -115,6 +116,7 @@ class Backtester:
         def close(p: _Pos, i: int, price: float, reason: str, exit_time: pd.Timestamp) -> None:
             nonlocal balance
             pnl = money(p.side, p.entry, price, p.lots, cs, vm, comm)
+            pnl += swap_money(p.side, p.lots, p.entry_time, exit_time, bt.swap_long, bt.swap_short)
             balance += pnl
             risk_money = p.sl_dist * p.lots * cs * vm
             trades.append({

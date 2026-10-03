@@ -25,6 +25,7 @@ SYMBOL_TRADE_MODE_DISABLED, SYMBOL_TRADE_MODE_FULL = 0, 4
 DEAL_ENTRY_IN, DEAL_ENTRY_OUT = 0, 1
 DEAL_REASON_CLIENT, DEAL_REASON_EXPERT, DEAL_REASON_SL, DEAL_REASON_TP = 0, 3, 4, 5
 TRADE_RETCODE_DONE = 10009
+SYMBOL_SWAP_MODE_DISABLED, SYMBOL_SWAP_MODE_POINTS, SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT = 0, 1, 4
 
 
 class FakeMT5:
@@ -77,7 +78,8 @@ class FakeMT5:
     def _sym(self, name):
         return NS(name=name, digits=3, point=0.001, trade_contract_size=100.0, volume_min=0.01, volume_step=0.01,
                   volume_max=200.0, trade_stops_level=0, filling_mode=self.filling_mask, trade_tick_size=0.001,
-                  trade_tick_value=0.1, currency_profit="USD", trade_mode=SYMBOL_TRADE_MODE_FULL, visible=True)
+                  trade_tick_value=0.1, currency_profit="USD", trade_mode=SYMBOL_TRADE_MODE_FULL, visible=True,
+                  swap_mode=1, swap_long=-650.0, swap_short=120.0)
 
     def symbols_get(self, group=None):
         names = ["EURUSDc", "XAUUSD", self.symbol, "XAGUSDc", "US500c"]

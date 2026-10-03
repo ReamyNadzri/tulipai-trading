@@ -92,7 +92,7 @@ class StrategyConfig:
 
 @dataclass
 class AIConfig:
-    mode: str = "filter"  # off | filter | autonomous
+    mode: str = "off"  # off (rules only) | filter | autonomous - the LLM layer is opt-in
     model: str = "claude-opus-5-5"
     effort: str = "medium"  # low | medium | high | xhigh | max
     max_tokens: int = 16000
@@ -146,6 +146,10 @@ class BacktestConfig:
     spread: float = 0.35  # price units; used when data has no spread, and as a floor under MT5's bar spread
     slippage: float = 0.05
     commission_per_lot: float = 0.0  # round-turn, account currency
+    # Overnight financing per 1.0 lot per rollover (17:00 New York; Wednesday counts 3x), account
+    # currency, negative = you pay. `research` replaces these with your broker's real values.
+    swap_long: float = -60.0
+    swap_short: float = -10.0
     warmup_bars: int = 300
 
 
@@ -213,6 +217,8 @@ def load_config(path: str | Path | None = None, overrides: dict | None = None) -
 
 def validate_config(cfg: Config) -> None:
     tf_minutes(cfg.symbol.timeframe)
+    if cfg.ai.mode is False or cfg.ai.mode is None:  # YAML reads an unquoted `off` as false
+        cfg.ai.mode = "off"
     if cfg.ai.mode not in ("off", "filter", "autonomous"):
         raise ValueError("ai.mode must be off, filter or autonomous")
     if cfg.ai.on_error not in ("skip", "quant"):

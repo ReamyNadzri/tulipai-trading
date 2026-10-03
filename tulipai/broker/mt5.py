@@ -478,6 +478,36 @@ class MT5Broker(Broker):
         res.ticket = int(ticket)
         return res
 
+    def swap_per_lot_night(self) -> tuple[Optional[float], Optional[float], str]:
+        """Broker's overnight swap for 1.0 lot (long, short) in account currency, if the
+        symbol's swap mode can be converted; otherwise (None, None, reason)."""
+        mt5 = self.mt5
+        with self._lock:
+            si = mt5.symbol_info(self.symbol)
+        if si is None:
+            return None, None, "no symbol info"
+        mode = int(getattr(si, "swap_mode", -1))
+        sl, ss = float(getattr(si, "swap_long", 0.0)), float(getattr(si, "swap_short", 0.0))
+        if mode == _c(mt5, "SYMBOL_SWAP_MODE_DISABLED", 0):
+            return 0.0, 0.0, "swap disabled (swap-free)"
+        price = self.tick().bid
+
+        def price_move_money(dist: float) -> float:  # account-currency value of a price move on 1 lot
+            if dist == 0:
+                return 0.0
+            return self.loss_per_lot(1, price, price - abs(dist)) - self.cfg.backtest.commission_per_lot
+
+        if mode == _c(mt5, "SYMBOL_SWAP_MODE_POINTS", 1):
+            return (np.sign(sl) * price_move_money(sl * si.point), np.sign(ss) * price_move_money(ss * si.point),
+                    f"{sl} / {ss} points")
+        if mode == _c(mt5, "SYMBOL_SWAP_MODE_CURRENCY_DEPOSIT", 4):
+            return sl, ss, f"{sl} / {ss} in account currency"
+        if mode in (_c(mt5, "SYMBOL_SWAP_MODE_INTEREST_CURRENT", 5), _c(mt5, "SYMBOL_SWAP_MODE_INTEREST_OPEN", 6)):
+            day = price / 360.0  # annual % of the position value, per day
+            return (np.sign(sl) * price_move_money(day * abs(sl) / 100), np.sign(ss) * price_move_money(day * abs(ss) / 100),
+                    f"{sl}% / {ss}% a year")
+        return None, None, f"swap mode {mode} not converted (raw {sl} / {ss})"
+
     def close_all(self) -> list[OrderResult]:
         return [self.close_position(p.ticket) for p in self.positions()]
 

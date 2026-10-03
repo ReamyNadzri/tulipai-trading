@@ -1,15 +1,19 @@
-# TulipAI: autonomous AI gold trading for MetaTrader 5
+# TulipAI: autonomous gold trading for MetaTrader 5
 
 TulipAI trades **gold (XAUUSD)** on a MetaTrader 5 **demo or cent account** on its own. It reads the
-candles, runs three rule-based strategies and asks **Claude** to approve or veto each trade, with
-economic news and headlines in front of it. It sizes every position from a fixed % risk, places the
-stop-loss and take-profit, manages the trade, and logs every decision so you can measure whether it
-actually makes money.
+candles, runs three rule-based strategies, checks a set of safety rules (sessions, spread, news
+blackout, loss limits), sizes every position from a fixed % risk, places the stop-loss and
+take-profit, manages the trade, and logs every decision so you can measure whether it actually
+makes money.
+
+**By default it runs on rules only: no AI and no API costs.** Every decision is fixed logic that
+the backtester reproduces exactly. Claude can optionally be switched on as an extra approve/veto
+filter (section 5).
 
 ```
- MT5 candles ─► strategies ─► risk pre-checks ─► ML filter ─► Claude (filter / autonomous)
- (closed bars)  breakout       session, spread,   optional     reads trend, levels, news,
-                pullback       news blackout,                  headlines, recent results
+ MT5 candles ─► strategies ─► risk pre-checks ─► [optional] ML filter ─► [optional] Claude
+ (closed bars)  breakout       session, spread,
+                pullback       news blackout,
                 mean-revert    daily loss, ...
                                      │
                                      ▼
@@ -17,7 +21,7 @@ actually makes money.
                                                                    time stop / weekend flat
                                      │
                                      ▼
-              journal (SQLite) ─► control panel, live report, veto scorecard, Claude review
+              journal (SQLite) ─► control panel, live report, benchmarks
 ```
 
 > **Read this first.** No trading system can promise profit, and this one does not. Gold moves
@@ -38,11 +42,10 @@ actually makes money.
    **control panel** at `http://127.0.0.1:8765`.
 5. **Log in.** Enter your MT5 **login number, password and server** (exactly as in your broker's
    email, e.g. `Exness-MT5Trial8`). Click **Connect & open MT5**. TulipAI opens the MT5 terminal and logs in by itself.
-6. **Optional: Claude.** Paste a Claude API key from [console.anthropic.com](https://console.anthropic.com)
-   (or put `ANTHROPIC_API_KEY=...` in a `.env` file; copy `.env.example`). Without a key the bot
-   trades on rules only.
-7. Click **Start bot**. The dashboard shows equity, open positions, Claude's latest reasoning,
-   every decision and every trade.
+6. **Decisions: leave "Rules only (no AI)"** (the default). To try Claude instead, pick a Claude
+   option and paste an API key from [console.anthropic.com](https://console.anthropic.com).
+7. Click **Start bot**. The dashboard shows equity, open positions, every decision (and why) and
+   every trade.
 
 You don't need TeamViewer or remote access. The bot runs on your own PC next to MT5. Keep the PC
 on and awake while it trades, or use a cheap Windows VPS.
@@ -101,13 +104,15 @@ XAUUSD history. MT5 data is still preferred because it matches your broker.
 ## 3. Measuring live: is it making money?
 
 - **Control panel:** equity curve, today's P&L, win rate, profit factor, average R, max drawdown,
-  per-strategy stats, and the **veto scorecard**. Every signal Claude or the ML filter blocked is
-  later scored *as if it had been taken*. Negative "Avg R if taken" means the vetoes saved money;
-  positive means Claude is filtering out winners.
+  per-strategy stats and the decision log. If you switch on Claude or the ML filter, a **veto
+  scorecard** appears: every signal they blocked is later scored *as if it had been taken*.
+  Negative "Avg R if taken" means the vetoes saved money; positive means they are filtering out
+  winners.
 - **`python -m tulipai report --mode mt5`** builds the same HTML report from the live journal, so
   you can compare live results against the backtest.
-- **`python -m tulipai review`** asks Claude to review the journal and propose up to 5 concrete,
-  testable changes. Test each suggestion with `backtest`/`walkforward` before applying it.
+- **`python -m tulipai review`** (optional, needs an API key) asks Claude to review the journal
+  offline and propose up to 5 testable changes. It never touches live trading. Test each
+  suggestion with `backtest`/`walkforward` before applying it.
 
 Everything lives in `runs\journal.db` (SQLite: decisions, trades, equity, AI calls with token
 usage, shadow trades).
@@ -118,8 +123,11 @@ Switch only when **all** are true:
 
 - ≥ 4 weeks and ≥ 50 closed trades on demo;
 - live average R ≥ 0, and live results look like the walk-forward report;
-- the backtest verdict is EDGE or WEAK EDGE (not NO EDGE);
-- the veto scorecard shows Claude's vetoes are not costing money.
+- the backtest verdict is EDGE or WEAK EDGE (not NO EDGE), and the cost stress test is still positive;
+- if you use Claude: the veto scorecard shows its vetoes are not costing money.
+
+On the cent account, start at `risk_per_trade_pct: 0.5` (or lower) until live results confirm the
+backtest. With no proven edge, smaller is safer.
 
 Then set `account.allow_real_account: true` in `config\config.yaml`. Until then the bot **refuses
 to send orders to any non-demo account**, including cent accounts.
@@ -156,7 +164,21 @@ bot finds the symbol automatically (`XAUUSDc`, `XAUUSDm`, `XAUUSD`, `GOLD`, ...)
 
 ---
 
-## 5. How the AI part works
+## 5. Rules only vs. AI (optional)
+
+**Rules only (`ai.mode: off`, the default)** is the recommended way to run TulipAI:
+
+- every decision is deterministic: the same candles always give the same trade;
+- the backtester reproduces the live logic exactly (only the news blackout is missing from
+  backtests unless you pass `--calendar`), so the research reports describe what the bot will do;
+- no API costs (on a $100 cent account a Claude call can cost more than the spread), no outage risk.
+
+Research on systematic gold trading found no published evidence that an LLM layer improves a
+rule-based gold system. The things an AI would add, like reading news, are covered by rules: the
+news blackout around high-impact US releases (with a built-in official schedule as a fallback), the
+spread filter and the loss limits.
+
+### The optional Claude layer
 
 **Claude** (model `claude-opus-5-5`, set in `ai.model`) gets a compact briefing at each decision point:
 
@@ -171,9 +193,11 @@ It answers with schema-validated JSON: action, confidence, stop/target in ATR, a
 
 | `ai.mode` | Behaviour |
 |---|---|
-| `filter` (default) | Claude approves or vetoes each strategy signal and may tighten stop/target and risk. It can't reverse direction. |
-| `autonomous` | Claude can also propose its own trades (asked every 4 bars when flat) and overrule signals. |
-| `off` | Rules only. |
+| `off` (default) | Rules only. No API key needed. |
+| `filter` | Claude approves or vetoes each strategy signal and may tighten stop/target and risk. It can't reverse direction. |
+| `autonomous` | Experimental. Claude can also propose its own trades (asked every 4 bars when flat) and overrule signals. |
+
+Pick the mode in the panel's **Decisions** list, in `config\config.yaml`, or with `--ai` on `live`/`panel`.
 
 Safety around the AI: minimum confidence 0.6; a daily call cap (`max_calls_per_day`); if the API
 fails, the bot does *not* trade (`on_error: skip`); a declined request falls back server-side to
@@ -195,9 +219,11 @@ improved the test period.
 
 From research on what has worked for intraday gold (sources at the bottom):
 
-1. **Asian-range breakout at the London open** (`session_breakout`): mark the 00:00-07:00 UTC
-   range and take the first close beyond it during the London morning, only with (or not against)
-   the H4 trend. The stop sits at the middle of the range.
+1. **Asian-range breakout at the London open** (`session_breakout`): mark the overnight range
+   (00:00-08:00 London time) and take the first close beyond it during the London morning
+   (08:00-14:00 London time), only with (or not against) the H4 trend. The stop sits at the middle of
+   the range. London time follows UK daylight saving, so in UTC the window is 07:00-13:00 in summer
+   and 08:00-14:00 in winter.
 2. **Trend pullback** (`trend_pullback`): EMA50 > EMA200, EMA200 rising, ADX ≥ 20 and H4 trend up.
    Buy when price dips into the EMA20 and closes back up (mirror for shorts). Stop 1.5 ATR, target 2R.
 3. **Range mean reversion** (`mean_reversion`): with ADX < 20, fade closes back inside a 2.2σ

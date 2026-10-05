@@ -1,8 +1,8 @@
 """Benchmarks: is the strategy actually better than doing nothing clever?
 
 1. Buy & hold gold over the same period (unlevered).
-2. Random-entry Monte Carlo: the SAME engine, risk rules, sessions, sizing and
-   stop/target geometry as the strategy, but random entry times and random direction.
+2. Random-entry Monte Carlo: the SAME engine, risk rules, sessions, sizing, stop/target
+   geometry and buy/sell mix as the strategy, but random entry times.
    If the strategy does not beat most random runs, its profit is luck, not skill.
 """
 
@@ -37,10 +37,19 @@ def random_entry_benchmark(
     end: int | None = None,
     features: Features | None = None,
     progress: bool = False,
+    long_fraction: float | None = None,
+    kill_switch: bool = True,
 ) -> dict:
+    """``long_fraction``: share of random entries that buy. Default = the strategy's own buy share,
+    so a strategy that is simply long in a rising market does not look skilful. ``kill_switch``:
+    set False when comparing against a walk-forward result whose risk state reset every window."""
     trades = result.trades
     if len(trades) < 5:
         return {"n_sims": 0, "note": "not enough strategy trades for a meaningful benchmark"}
+    p_long = float((trades["side"] > 0).mean()) if long_fraction is None else float(long_fraction)
+    if not kill_switch:
+        cfg = cfg.copy()
+        cfg.risk.max_drawdown_pct = 100.0
     feats = features or Features(df, cfg.symbol.timeframe)
     atr = feats.atr(14).to_numpy()
     n = len(df)
@@ -79,7 +88,7 @@ def random_entry_benchmark(
         pick = np.sort(rng.choice(cand, size=n_signals, replace=False))
         g = geom[rng.integers(0, len(geom), size=n_signals)]
         sig = pd.DataFrame(index=df.index, data={"signal": 0, "sl_dist": 0.0, "tp_dist": 0.0, "strength": 0.0, "strategy": ""})
-        sides = rng.choice([-1, 1], size=n_signals)
+        sides = np.where(rng.random(n_signals) < p_long, 1, -1)
         sl = g[:, 0] * atr[pick]
         sig.iloc[pick, 0] = sides
         sig.iloc[pick, 1] = sl
@@ -97,6 +106,7 @@ def random_entry_benchmark(
     p_value = (np.sum(nets >= strat_net) + 1) / (len(nets) + 1)
     return {
         "n_sims": n_sims,
+        "long_fraction": p_long,
         "strategy_net": float(strat_net),
         "random_net_mean": float(nets.mean()),
         "random_net_median": float(np.median(nets)),

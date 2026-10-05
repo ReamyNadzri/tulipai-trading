@@ -53,7 +53,8 @@ management:
 strategy:
   name: ensemble              # ensemble | session_breakout | trend_pullback | mean_reversion
   members: [session_breakout, trend_pullback, mean_reversion]   # priority order
-  params: {}                  # e.g. {trend_pullback: {adx_min: 22, rr: 2.5}} - or use --params from walkforward
+  params: {}                  # manual overrides, e.g. {trend_pullback: {adx_min: 22, rr: 2.5}}
+  params_file: config/optimized_params.yaml   # written by research.bat (walk-forward); used when present
 
 ai:
   mode: 'off'                 # 'off' = rules only (default) | filter (Claude approves/vetoes) | autonomous (Claude decides)

@@ -145,7 +145,7 @@
     TulipCharts.lineChart($("eq"), series, { height: 280, label: "Equity curve, strategy versus buy and hold" });
     TulipCharts.lineChart($("dd"), [{ name: "Drawdown %", color: "--series-1", points: D.drawdown }], { height: 200, baseline: 0, label: "Drawdown from peak in percent" });
     if (D.random && D.random.random_nets) {
-      $("rand-sub").textContent = `Net profit of ${D.random.n_sims} runs with random entry times and direction but the same sessions, risk rules, sizing and stop/target geometry. The line marks this strategy.`;
+      $("rand-sub").textContent = `Net profit of ${D.random.n_sims} runs with random entry times but the same sessions, risk rules, sizing, stop/target geometry and buy/sell mix (${Math.round((D.random.long_fraction ?? 0.5) * 100)}% buys). The line marks this strategy.`;
       TulipCharts.histogram($("hist"), D.random.random_nets, { value: D.random.strategy_net, label: "this strategy" }, { height: 200, label: "Distribution of random-entry results" });
     } else {
       $("rand-sub").textContent = D.random && D.random.note ? D.random.note : "Not run (use --mc N).";

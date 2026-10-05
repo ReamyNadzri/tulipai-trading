@@ -88,6 +88,9 @@ class StrategyConfig:
     name: str = "ensemble"
     members: list = field(default_factory=lambda: ["session_breakout", "trend_pullback", "mean_reversion"])
     params: dict = field(default_factory=dict)  # {strategy_name: {param: value}}
+    # Walk-forward settings written by `research`/`walkforward`; used automatically when present.
+    # Precedence: built-in defaults < this file < `params` above < --params on the command line.
+    params_file: str = "config/optimized_params.yaml"
 
 
 @dataclass
@@ -235,6 +238,62 @@ def validate_config(cfg: Config) -> None:
     for window in r.trade_hours_utc:
         if len(window) != 2 or not (0 <= window[0] < window[1] <= 24):
             raise ValueError(f"Bad risk.trade_hours_utc window {window}; use [start, end) hours 0-24")
+
+
+PARAMS_MAX_AGE_DAYS = 45
+
+
+def params_file_info(path: str | Path) -> dict:
+    """What a walk-forward params file contains: {exists, generated, age_days, params}."""
+    p = Path(path) if path else None
+    if p is None or not p.exists():
+        return {"exists": False, "generated": None, "age_days": None, "params": {}}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    params = (data.get("strategy") or {}).get("params") or {} if isinstance(data, dict) else {}
+    generated = str(data.get("generated", "")) if isinstance(data, dict) else ""
+    age = None
+    if generated:
+        try:
+            import datetime as _dt
+
+            age = (_dt.date.today() - _dt.date.fromisoformat(generated[:10])).days
+        except ValueError:
+            age = None
+    return {"exists": True, "generated": generated or None, "age_days": age, "params": params}
+
+
+def apply_params_file(cfg: Config) -> str:
+    """Merge the walk-forward params file under the explicit config params. Returns a short
+    description of where the strategy settings come from (for logs and the panel)."""
+    info = params_file_info(cfg.strategy.params_file)
+    if not info["exists"] or not info["params"]:
+        return "built-in default strategy settings"
+    explicit = cfg.strategy.params or {}
+    merged = {m: {**(info["params"].get(m) or {}), **(explicit.get(m) or {})}
+              for m in set(info["params"]) | set(explicit)}
+    cfg.strategy.params = merged
+    desc = f"walk-forward settings from {info['generated'] or 'an unknown date'} ({cfg.strategy.params_file})"
+    if info["age_days"] is not None and info["age_days"] > PARAMS_MAX_AGE_DAYS:
+        desc += f" - {info['age_days']} days old, re-run research.bat"
+    return desc
+
+
+def save_params_file(path: str | Path, params: dict, method: str, data_range: str) -> Path:
+    """Write walk-forward parameters in the format apply_params_file() reads."""
+    import datetime as _dt
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "generated": _dt.date.today().isoformat(),
+        "method": method,
+        "data": data_range,
+        "strategy": {"params": params},
+    }
+    header = ("# Strategy settings chosen by TulipAI's walk-forward test. The bot uses them automatically.\n"
+              "# Re-run research.bat about once a month so they stay current (that is how they were tested).\n")
+    p.write_text(header + yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
+    return p
 
 
 def dump_config(cfg: Config, path: str | Path) -> None:

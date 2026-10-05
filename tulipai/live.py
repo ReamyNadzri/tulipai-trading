@@ -87,12 +87,16 @@ class LiveEngine:
                 self.brain = None
         self.status.update(state="running", warnings=warnings, symbol=self.broker.symbol,
                            server_time=getattr(self.broker, "offset_note", ""),
-                           ai_mode=self.cfg.ai.mode if self.brain is not None else "off")
+                           ai_mode=self.cfg.ai.mode if self.brain is not None else "off",
+                           strategy_source=getattr(self.cfg, "strategy_source", "built-in default strategy settings"))
+        if "re-run research" in self.status["strategy_source"]:
+            self.status["warnings"].append(f"Strategy settings are out of date: {self.status['strategy_source']}")
         for w in warnings:
             log.warning(w)
         self._reconcile()
-        log.info("Connected: account %s (%s, %s), symbol %s, AI mode %s", acct.login, acct.currency,
-                 "demo" if acct.is_demo else "REAL", self.broker.symbol, self.cfg.ai.mode if self.brain else "off")
+        log.info("Connected: account %s (%s, %s), symbol %s, AI mode %s, %s", acct.login, acct.currency,
+                 "demo" if acct.is_demo else "REAL", self.broker.symbol, self.cfg.ai.mode if self.brain else "off",
+                 self.status["strategy_source"])
         return acct
 
     def _reconcile(self) -> None:

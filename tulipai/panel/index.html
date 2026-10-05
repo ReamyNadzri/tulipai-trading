@@ -355,7 +355,7 @@ td.wrap-text { white-space: normal; min-width: 220px; }
      ["Loss streak", rs.consecutive_losses ?? 0], ["Cooldown until", rs.cooldown_until ? t16(rs.cooldown_until) : "-"],
      ["Day start equity", fmt(rs.day_start_equity)], ["Peak equity", fmt(rs.peak_equity)],
      ["Last bar", t16(eng.last_bar)], ["Last decision", ld.action ? `${ld.action} - ${ld.reason || ""}` : "-"],
-     ["Server time", eng.server_time || "-"]].forEach(([k, v]) => {
+     ["Server time", eng.server_time || "-"], ["Strategy settings", eng.strategy_source || "-"]].forEach(([k, v]) => {
       const dt = document.createElement("dt"); dt.textContent = k;
       const dd = document.createElement("dd"); dd.textContent = v;
       kv.append(dt, dd);

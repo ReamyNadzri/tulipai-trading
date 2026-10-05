@@ -89,8 +89,8 @@ def walk_forward(
     current = {m: dict(base_params[m]) for m in members}
     while True:
         test_start, test_end = t0, t0 + pd.DateOffset(months=test_months)
-        if test_start >= idx[-1]:
-            break
+        if test_start >= idx[-1] or idx[-1] - test_start < pd.Timedelta(days=10):
+            break  # a final stub of a few days says nothing and only adds noise
         train_start = test_start - pd.DateOffset(months=train_months)
         i_tr0 = max(int(idx.searchsorted(train_start)), warm)
         i_te0 = int(idx.searchsorted(test_start))

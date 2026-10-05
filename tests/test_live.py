@@ -284,7 +284,9 @@ def test_research_command_end_to_end(cfg, tmp_path, monkeypatch):
                    "--train-months", "3", "--test-months", "2"])
     assert rc == 0
     text = (tmp_path / "reports" / "research_summary.txt").read_text()
-    for needle in ("== 1. Data ==", "Symbol: XAUUSDc", "VERDICT", "Walk-forward", "ML meta-label", "Finished"):
+    for needle in ("== 1. Data ==", "Symbol: XAUUSDc", "BACKTEST VERDICT", "WALK-FORWARD VERDICT",
+                   "Strategy settings:", "By direction", "ML filter", "Finished"):
         assert needle in text, needle
+    assert "generated:" in (tmp_path / "config" / "optimized_params.yaml").read_text()
     assert "password" not in text.lower().replace("no passwords", "")
     assert (tmp_path / "reports" / "walkforward.html").exists() and (tmp_path / "data" / "xauusd_m15.csv").exists()

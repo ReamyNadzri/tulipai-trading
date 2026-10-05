@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import Config, load_config
+from .config import Config, apply_params_file, load_config, save_params_file
 
 DEFAULT_CONFIG = "config/config.yaml"
 
@@ -63,6 +63,7 @@ def _cfg(args) -> Config:
     cfg = load_config(path)
     if getattr(args, "ai", None) in ("off", "filter", "autonomous"):
         cfg.ai.mode = args.ai
+    cfg.strategy_source = apply_params_file(cfg)  # type: ignore[attr-defined]
     if getattr(args, "params", None):
         import yaml
 
@@ -234,12 +235,10 @@ def cmd_walkforward(args) -> int:
     print("\n=== OUT-OF-SAMPLE (stitched test windows) ===")
     print(format_metrics(m))
     if args.save_params:
-        import yaml
-
-        Path(args.save_params).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.save_params).write_text(yaml.safe_dump({"strategy": {"params": wf.best_params}}, sort_keys=False),
-                                          encoding="utf-8")
-        print(f"Latest window's parameters saved to {args.save_params} (use with --params)")
+        saved = save_params_file(args.save_params, wf.best_params,
+                                 f"walk-forward, train {args.train_months} months / test {args.test_months} month(s), latest window",
+                                 f"{df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d}")
+        print(f"Latest window's parameters saved to {saved} - the live bot uses them automatically")
     if args.report:
         first = wf.oos.equity.index[0]
         sub = df[df.index >= first - pd.Timedelta(minutes=cfg.tf_minutes)]
@@ -263,8 +262,8 @@ def cmd_train_ml(args) -> int:
     _, rep = train(df, sig, cfg, out_path=out)
     print(rep.text())
     print(f"Model saved to {out}. Enable it with ml.enabled: true (and test it: tulip backtest --ml).")
-    if rep.test_avg_r_kept <= rep.test_avg_r_all:
-        print("NOTE: the filter did not improve the test period - keep ml.enabled: false.")
+    helps, why = rep.verdict()
+    print(f"ML filter helps: {why}" if helps else f"NOTE: the filter does not help ({why}) - keep ml.enabled: false.")
     return 0
 
 
@@ -382,8 +381,6 @@ def cmd_research(args) -> int:
     everything worth sharing to reports/research_summary.txt."""
     import time as _time
 
-    import yaml
-
     from .backtest.benchmark import buy_and_hold, random_entry_benchmark
     from .backtest.metrics import format_metrics
     from .backtest.walkforward import summarize_windows, walk_forward
@@ -454,10 +451,18 @@ def cmd_research(args) -> int:
         "22:00-23:00 in winter; a big mismatch means the server time zone is wrong)")
 
     # 2. backtest + benchmarks --------------------------------------------------------
-    out("\n== 2. Backtest with default settings (in-sample) ==")
+    out("\n== 2. Backtest with the current settings (in-sample) ==")
+    out(f"Strategy settings: {getattr(cfg, 'strategy_source', 'built-in default strategy settings')}")
     res, feats, start, strat = _run_backtest(argparse.Namespace(ml=False, calendar=None), cfg, df)
     out(format_metrics(res.metrics()))
     out(f"Signals blocked: {res.blocked}")
+    if res.blocked.get("halted"):
+        eq = res.equity.dropna()
+        peak = eq.cummax().clip(lower=res.initial_balance)
+        hit = eq[eq <= peak * (1 - cfg.risk.max_drawdown_pct / 100)]
+        if len(hit):
+            out(f"NOTE: the {cfg.risk.max_drawdown_pct:g}% drawdown safety stop triggered on {hit.index[0]:%Y-%m-%d}; "
+                "this backtest took no trades after that.")
     bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
     out(f"Buy & hold gold: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%, Sharpe {bh['sharpe']:.2f})")
     for side, name in ((1, "long"), (-1, "short")):
@@ -479,7 +484,7 @@ def cmd_research(args) -> int:
         if rb.get("n_sims"):
             out(f"Random entries: mean {rb['random_net_mean']:+.2f}, 5-95% [{rb['random_net_p5']:+.2f}, "
                 f"{rb['random_net_p95']:+.2f}]; strategy beats {rb['strategy_percentile']:.0f}% (p={rb['p_value']:.3f})")
-            out(f"VERDICT: {rb['verdict']}")
+            out(f"BACKTEST VERDICT (current settings): {rb['verdict']}")
         else:
             out(rb.get("note", ""))
     page = build_report(res, "TulipAI backtest (broker data)", f"{df.index[start]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}",
@@ -492,14 +497,33 @@ def cmd_research(args) -> int:
         wf = walk_forward(df, cfg, args.train_months, args.test_months, args.max_combos, 15)
         out(summarize_windows(wf).to_string(index=False, float_format=lambda v: f"{v:+.2f}"))
         out(format_metrics(wf.metrics()))
-        Path("config").mkdir(exist_ok=True)
-        Path("config/optimized_params.yaml").write_text(
-            yaml.safe_dump({"strategy": {"params": wf.best_params}}, sort_keys=False), encoding="utf-8")
-        out("Latest parameters: " + str(wf.best_params))
-        sub = df[df.index >= wf.oos.equity.index[0] - pd.Timedelta(minutes=cfg.tf_minutes)]
-        wf_bh, _ = buy_and_hold(sub, wf.oos.initial_balance, bar_minutes=cfg.tf_minutes)
+        saved = save_params_file(cfg.strategy.params_file or "config/optimized_params.yaml", wf.best_params,
+                                 f"walk-forward, train {args.train_months} months / test {args.test_months} month(s), latest window",
+                                 f"{df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d}")
+        out(f"Latest parameters (saved to {saved}; the live bot now uses them): " + str(wf.best_params))
+        oos_t = wf.oos.trades
+        for side, name in ((1, "long"), (-1, "short")):
+            t = oos_t[oos_t["side"] == side]
+            if len(t):
+                out(f"By direction - {name:<5}: {len(t)} trades, win {100 * (t['pnl'] > 0).mean():.1f}%, "
+                    f"avg R {t['r_multiple'].mean():+.3f}, pnl {t['pnl'].sum():+.2f}")
+        first_open = wf.oos.equity.index[0] - pd.Timedelta(minutes=cfg.tf_minutes)
+        sub = df[df.index >= first_open]
+        wf_bh, wf_bh_stats = buy_and_hold(sub, wf.oos.initial_balance, bar_minutes=cfg.tf_minutes)
+        out(f"Buy & hold gold over the same test period: {wf_bh_stats['return_pct']:+.2f}% "
+            f"(max DD {wf_bh_stats['max_dd_pct']:.1f}%, Sharpe {wf_bh_stats['sharpe']:.2f})")
+        rb_wf = None
+        if args.mc:
+            out(f"Random-entry benchmark for the walk-forward result ({args.mc} runs, same period and buy/sell mix)...")
+            rb_wf = random_entry_benchmark(df, cfg, wf.oos, n_sims=args.mc, start=int(df.index.searchsorted(first_open)),
+                                           features=feats, progress=True, kill_switch=False, seed=1)
+            if rb_wf.get("n_sims"):
+                out(f"Random entries: mean {rb_wf['random_net_mean']:+.2f}, 5-95% [{rb_wf['random_net_p5']:+.2f}, "
+                    f"{rb_wf['random_net_p95']:+.2f}]; walk-forward beats {rb_wf['strategy_percentile']:.0f}% "
+                    f"(p={rb_wf['p_value']:.3f}, {rb_wf['long_fraction']:.0%} buys)")
+                out(f"WALK-FORWARD VERDICT: {rb_wf['verdict']}")
         page = build_report(wf.oos, "TulipAI walk-forward (broker data)", "Out-of-sample only", buy_hold=wf_bh,
-                            windows=wf.windows, notes=NOTES)
+                            random_bench=rb_wf, windows=wf.windows, notes=NOTES)
         out(f"Report: {write_report('reports/walkforward.html', page)}")
     except ValueError as exc:
         out(f"Walk-forward skipped: {exc}")
@@ -511,8 +535,9 @@ def cmd_research(args) -> int:
 
         _, rep = train(df, strat.generate(feats), cfg, out_path=cfg.ml.model_path)
         out(rep.text())
-        out("Filter helps on the test period - consider ml.enabled: true" if rep.test_avg_r_kept > rep.test_avg_r_all
-            else "Filter does NOT help on the test period - keep ml.enabled: false")
+        helps, why = rep.verdict()
+        out(f"ML filter helps: {why} - consider ml.enabled: true" if helps
+            else f"ML filter does NOT help: {why} - keep ml.enabled: false")
     except Exception as exc:
         out(f"ML skipped: {exc}")
 

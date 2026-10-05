@@ -61,7 +61,7 @@ With MT5 open and logged in, double-click **`scripts\research.bat`**. It does ev
 on **your broker's own gold history** (about 10-30 minutes):
 
 1. downloads about 2 years of M15 bars from MT5 and checks the broker's server time zone;
-2. backtests the strategies and compares them with buy & hold and 200 random-entry runs;
+2. backtests the strategies and compares them with buy & hold and 500 random-entry runs;
 3. runs walk-forward optimisation (tuned on old data, tested on newer data it has never seen);
 4. trains the optional ML filter and reports whether it helps.
 
@@ -81,7 +81,7 @@ Each command writes an HTML report to `reports\`. Read it in this order:
 
 | Benchmark | Question it answers | What "good" looks like |
 |---|---|---|
-| **Random-entry Monte Carlo** | Is the profit skill or luck? 200 runs with the *same* sessions, risk, sizing and stop/target geometry but random entries. | Verdict **EDGE** (p ≤ 0.05). **NO EDGE** means don't trust the profit, even if it's positive. |
+| **Random-entry Monte Carlo** | Is the profit skill or luck? Hundreds of runs with the *same* sessions, risk, sizing, stop/target geometry and buy/sell mix, but random entry times. Run for both the backtest and the walk-forward result. | Verdict **EDGE** (p ≤ 0.05). **NO EDGE** means don't trust the profit, even if it's positive. |
 | **Walk-forward (out-of-sample)** | Does it still work on data it was *not* tuned on? | Positive total R, and most test windows not negative. This is the honest number. |
 | **Buy & hold gold** | Would simply holding gold have done better? | Better risk-adjusted return (Sharpe, drawdown) than holding. |
 | **Max drawdown / loss streak** | Can you stomach it? | Within what you would accept with real money. |

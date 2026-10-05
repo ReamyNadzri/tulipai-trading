@@ -276,3 +276,69 @@ def test_panel_ignores_old_saved_mode_and_cli_ai_wins(cfg, tmp_path, monkeypatch
     settings.write_text(json.dumps({"version": 2, "ai_mode": "filter"}))  # an explicit, current choice
     assert server.PanelApp(cfg, 8799).page_settings()["ai_mode"] == "filter"
     assert server.PanelApp(cfg, 8799, forced_ai_mode="off").page_settings()["ai_mode"] == "off"
+
+
+# ---------------------------------------------------------------------------- research-run regressions
+def test_ml_verdict_rejects_no_skill_filters():
+    from tulipai.ml.meta_label import TrainReport
+
+    # the real-data case: AUC below 0.5, keeps every signal, +0.001 R "improvement"
+    rep = TrainReport(1435, 616, 0.442, 0.13, 0.040, 0.041, 1.0, 24.8, 24.8)
+    helps, why = rep.verdict()
+    assert not helps and "no predictive skill" in why
+    assert not TrainReport(100, 50, 0.60, 0.5, 0.05, 0.06, 0.6, 2.5, 1.8).verdict()[0]   # gain too small
+    assert TrainReport(100, 50, 0.60, 0.5, 0.05, 0.12, 0.6, 2.5, 3.6).verdict()[0]
+
+
+def test_random_benchmark_matches_buy_sell_mix(gold_df, cfg):
+    from tulipai.backtest.benchmark import random_entry_benchmark
+
+    f = Features(gold_df)
+    res = Backtester(cfg).run(gold_df, STRATEGIES["trend_pullback"]().generate(f), start=300, features=f)
+    rb = random_entry_benchmark(gold_df, cfg, res, n_sims=2, start=300, features=f)
+    assert rb["long_fraction"] == pytest.approx((res.trades["side"] > 0).mean())
+    rb = random_entry_benchmark(gold_df, cfg, res, n_sims=2, start=300, features=f, long_fraction=1.0,
+                                kill_switch=False)
+    assert rb["long_fraction"] == 1.0
+
+
+def test_params_file_is_used_with_correct_precedence(tmp_path, monkeypatch):
+    from tulipai import cli
+    from tulipai.config import params_file_info, save_params_file
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    save_params_file("config/optimized_params.yaml", {"trend_pullback": {"adx_min": 22.0, "rr": 1.5}},
+                     "walk-forward test", "2024-09-01 -> 2026-10-05")
+    info = params_file_info("config/optimized_params.yaml")
+    assert info["age_days"] == 0 and info["params"]["trend_pullback"]["rr"] == 1.5
+    (tmp_path / "config" / "config.yaml").write_text("strategy:\n  params:\n    trend_pullback:\n      rr: 3.0\n")
+    cfg = cli._cfg(cli.build_parser().parse_args(["live"]))
+    assert cfg.strategy.params["trend_pullback"] == {"adx_min": 22.0, "rr": 3.0}  # config.yaml beats the file
+    assert cfg.strategy_source.startswith("walk-forward settings from")
+    from tulipai.strategies import build_strategy
+
+    tp = build_strategy(cfg.strategy).members[1]
+    assert tp.params["adx_min"] == 22.0
+
+
+def test_old_params_file_warns(tmp_path, monkeypatch):
+    from tulipai.config import apply_params_file
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "p.yaml").write_text("generated: '2026-01-01'\nstrategy:\n  params:\n    trend_pullback:\n      rr: 1.5\n")
+    cfg = Config()
+    cfg.strategy.params_file = "p.yaml"
+    assert "re-run research" in apply_params_file(cfg)
+    cfg2 = Config()
+    cfg2.strategy.params_file = "missing.yaml"
+    assert apply_params_file(cfg2) == "built-in default strategy settings"
+
+
+def test_walkforward_skips_a_final_stub_window(cfg):
+    from tulipai.backtest.walkforward import walk_forward
+
+    df = synthetic_gold(start="2024-01-01", days=248, seed=6)  # ends a few days into a month
+    wf = walk_forward(df, cfg, train_months=4, test_months=1, max_combos=1, min_trades=1, progress=False)
+    last_test_start = pd.Timestamp(wf.windows[-1]["test"].split(" -> ")[0], tz="UTC")
+    assert df.index[-1] - last_test_start >= pd.Timedelta(days=10)

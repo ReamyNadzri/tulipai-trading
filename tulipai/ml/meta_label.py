@@ -119,6 +119,18 @@ class TrainReport:
     test_total_r_all: float
     test_total_r_kept: float
 
+    def verdict(self) -> tuple[bool, str]:
+        """Does the filter genuinely help? It must rank trades better than chance, actually skip
+        some signals, and lift the average result by a meaningful amount on the unseen test period."""
+        if not (self.test_auc == self.test_auc) or self.test_auc < 0.55:
+            return False, f"no predictive skill (test AUC {self.test_auc:.2f}; needs >= 0.55)"
+        if self.test_kept_frac > 0.9:
+            return False, f"it barely filters anything (keeps {self.test_kept_frac:.0%} of signals)"
+        gain = self.test_avg_r_kept - self.test_avg_r_all
+        if gain < 0.03:
+            return False, f"improvement too small ({gain:+.3f} R per trade; needs >= +0.03)"
+        return True, f"test AUC {self.test_auc:.2f}, keeps {self.test_kept_frac:.0%} of signals, {gain:+.3f} R per trade"
+
     def text(self) -> str:
         return (
             f"signals: train {self.n_train}, test {self.n_test}\n"

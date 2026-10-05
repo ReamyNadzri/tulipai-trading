@@ -1,10 +1,10 @@
 @echo off
 REM One-shot research on your broker's real gold history. MT5 must be installed (and
 REM logged in, or credentials in .env). Downloads ~2 years of M15 bars, then runs the
-REM backtest + benchmarks, walk-forward and ML filter, and writes:
+REM walk-forward test + benchmarks, a frozen-settings check and the ML filter; writes:
 REM   reports\research_summary.txt   <- send this file to Claude
 REM   reports\backtest.html, reports\walkforward.html
-REM Takes roughly 10-30 minutes depending on your PC.
+REM Takes roughly 5-30 minutes depending on your PC.
 setlocal
 cd /d "%~dp0\.."
 

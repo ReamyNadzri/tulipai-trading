@@ -24,7 +24,7 @@ import pandas as pd
 from .ai.brain import AIDecision, ClaudeBrain
 from .ai.context import build_context
 from .broker.base import AccountInfo, Broker, BrokerPosition, Tick
-from .config import Config
+from .config import Config, apply_params_file, params_file_info, save_params_file
 from .execution import simulate_trade, spread_array
 from .indicators import Features
 from .journal import Journal
@@ -69,6 +69,11 @@ class LiveEngine:
         self.status: dict = {"state": "created", "last_bar": None, "last_decision": None, "last_ai": None,
                              "error": "", "warnings": []}
         self._ctx_symbols: Optional[list[str]] = None
+        # Monthly re-tune (see _retune_tick). Never in replay: replays must match the backtester.
+        self.auto_retune = bool(cfg.strategy.auto_retune and cfg.strategy.params_file) and mode_label != "replay"
+        self._retune_thread: Optional[threading.Thread] = None
+        self._retune_out: dict = {}
+        self._retune_next_check: Optional[pd.Timestamp] = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> AccountInfo:
@@ -88,7 +93,8 @@ class LiveEngine:
         self.status.update(state="running", warnings=warnings, symbol=self.broker.symbol,
                            server_time=getattr(self.broker, "offset_note", ""),
                            ai_mode=self.cfg.ai.mode if self.brain is not None else "off",
-                           strategy_source=getattr(self.cfg, "strategy_source", "built-in default strategy settings"))
+                           strategy_source=getattr(self.cfg, "strategy_source", "built-in default strategy settings"),
+                           auto_retune=self.auto_retune)
         if "re-run research" in self.status["strategy_source"]:
             self.status["warnings"].append(f"Strategy settings are out of date: {self.status['strategy_source']}")
         for w in warnings:
@@ -122,6 +128,7 @@ class LiveEngine:
         while not stop_event.is_set():
             try:
                 self.step()
+                self._retune_tick()
                 delay = self.cfg.live.poll_seconds
                 self.status["error"] = ""
             except Exception as exc:  # keep the bot alive; report and back off
@@ -180,6 +187,95 @@ class LiveEngine:
         self._maybe_enter(df, feats, sig.iloc[-1], atr, now, acct, tick)
         self._save_risk()
         return True
+
+    # ------------------------------------------------------------------ monthly re-tune
+    def retune_due(self, now: pd.Timestamp) -> tuple[bool, str]:
+        """The walk-forward test re-chose the settings at the start of every month; so does the bot."""
+        if not self.auto_retune or self._retune_thread is not None:
+            return False, ""
+        info = params_file_info(self.cfg.strategy.params_file)
+        if not info["exists"] or not info["generated"]:
+            return True, "no walk-forward settings yet"
+        if str(info["generated"])[:7] != f"{now:%Y-%m}":
+            return True, f"settings are from {str(info['generated'])[:10]} and a new month has started"
+        return False, ""
+
+    def _retune_tick(self, now: Optional[pd.Timestamp] = None) -> None:
+        """Called from the run loop: start a re-tune when one is due, apply it when it finishes.
+        The heavy work runs in a background thread so trading and trade management never wait."""
+        now = now or pd.Timestamp.now(tz="UTC")
+        if self._retune_thread is not None:
+            if not self._retune_thread.is_alive():
+                self._retune_thread = None
+                self._apply_retune(now)
+            return
+        if self._retune_next_check is not None and now < self._retune_next_check:
+            return
+        self._retune_next_check = now + pd.Timedelta(minutes=10)
+        due, why = self.retune_due(now)
+        if due:
+            self._start_retune(now, why)
+
+    def _start_retune(self, now: pd.Timestamp, why: str) -> None:
+        from .backtest.walkforward import retune
+
+        months = int(self.cfg.strategy.retune_train_months)
+        cfg = self.cfg.copy()
+        try:  # broker calls stay on this thread; only the number crunching goes to the worker
+            df = self.broker.candles(int((months + 1) * 31 * 1440 / self.cfg.tf_minutes))
+            src = getattr(self.broker, "data", self.broker)  # the paper broker reads MT5 through .data
+            if hasattr(src, "swap_per_lot_night"):
+                swl, sws, _ = src.swap_per_lot_night()
+                if swl is not None:
+                    cfg.backtest.swap_long, cfg.backtest.swap_short = float(swl), float(sws)
+        except Exception as exc:
+            self._retune_failed(now, f"could not read MT5 history: {exc}")
+            return
+        log.info("Re-tuning strategy settings on the last %d months (%s)", months, why)
+        self.status["retune"] = {"state": "running", "since": now.isoformat(), "reason": why}
+
+        def work() -> None:
+            try:
+                self._retune_out = {"result": retune(df, cfg, months)}
+            except Exception as exc:  # reported by _apply_retune on the engine thread
+                self._retune_out = {"error": f"{exc.__class__.__name__}: {exc}"}
+
+        self._retune_out = {}
+        self._retune_thread = threading.Thread(target=work, name="tulipai-retune", daemon=True)
+        self._retune_thread.start()
+
+    def _retune_failed(self, now: pd.Timestamp, error: str) -> None:
+        log.warning("Re-tune failed, keeping the current settings: %s", error)
+        self.status["retune"] = {"state": "failed", "at": now.isoformat(), "error": error}
+        self._retune_next_check = now + pd.Timedelta(hours=6)
+
+    def _apply_retune(self, now: pd.Timestamp) -> None:
+        out, self._retune_out = self._retune_out, {}
+        if "result" not in out:
+            self._retune_failed(now, out.get("error", "no result"))
+            return
+        res = out["result"]
+        months = int(self.cfg.strategy.retune_train_months)
+        try:
+            save_params_file(self.cfg.strategy.params_file, res.params,
+                             f"auto re-tune by the live bot on the last {months} months (one walk-forward step)",
+                             res.train_range)
+            source = apply_params_file(self.cfg)
+            strategy = build_strategy(self.cfg.strategy)
+        except Exception as exc:
+            self._retune_failed(now, f"{exc.__class__.__name__}: {exc}")
+            return
+        self.strategy = strategy
+        self.cfg.strategy_source = source  # type: ignore[attr-defined]
+        self.status["strategy_source"] = source
+        self.status["warnings"] = [w for w in self.status.get("warnings", []) if "out of date" not in w]
+        m = res.train_metrics
+        summary = {"state": "done", "at": now.isoformat(), "train": res.train_range, "trades": res.trades,
+                   "avg_r": round(float(m.get("avg_r", 0.0)), 3), "params": res.params}
+        self.status["retune"] = summary
+        self.journal.set_kv(f"last_retune:{self.mode_label}", summary)
+        log.info("Re-tuned on %s: %d trades, avg R %+.3f -> %s", res.train_range, res.trades,
+                 summary["avg_r"], res.params)
 
     # ------------------------------------------------------------------ helpers
     def _save_risk(self) -> None:

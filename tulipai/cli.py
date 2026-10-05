@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import logging.handlers
+import math
 import os
 import sys
 import threading
@@ -68,7 +70,9 @@ def _cfg(args) -> Config:
         import yaml
 
         extra = yaml.safe_load(Path(args.params).read_text(encoding="utf-8")) or {}
-        cfg.strategy.params.update(extra.get("strategy", {}).get("params", extra))
+        extra = extra.get("strategy", {}).get("params", extra)
+        cfg.strategy.params.update(extra)
+        cfg.explicit_strategy_params.update(extra)  # type: ignore[attr-defined]
     return cfg
 
 
@@ -450,58 +454,31 @@ def cmd_research(args) -> int:
     out(f"Quietest UTC hour in the data: {quiet:02d}:00 (gold's daily break is 21:00-22:00 UTC in summer, "
         "22:00-23:00 in winter; a big mismatch means the server time zone is wrong)")
 
-    # 2. backtest + benchmarks --------------------------------------------------------
-    out("\n== 2. Backtest with the current settings (in-sample) ==")
-    out(f"Strategy settings: {getattr(cfg, 'strategy_source', 'built-in default strategy settings')}")
-    res, feats, start, strat = _run_backtest(argparse.Namespace(ml=False, calendar=None), cfg, df)
-    out(format_metrics(res.metrics()))
-    out(f"Signals blocked: {res.blocked}")
-    if res.blocked.get("halted"):
-        eq = res.equity.dropna()
-        peak = eq.cummax().clip(lower=res.initial_balance)
-        hit = eq[eq <= peak * (1 - cfg.risk.max_drawdown_pct / 100)]
-        if len(hit):
-            out(f"NOTE: the {cfg.risk.max_drawdown_pct:g}% drawdown safety stop triggered on {hit.index[0]:%Y-%m-%d}; "
-                "this backtest took no trades after that.")
-    bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
-    out(f"Buy & hold gold: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%, Sharpe {bh['sharpe']:.2f})")
-    for side, name in ((1, "long"), (-1, "short")):
-        t = res.trades[res.trades["side"] == side]
-        if len(t):
-            out(f"By direction - {name:<5}: {len(t)} trades, win {100 * (t['pnl'] > 0).mean():.1f}%, "
-                f"avg R {t['r_multiple'].mean():+.3f}, pnl {t['pnl'].sum():+.2f}")
-    stress = cfg.copy()
-    stress.backtest.slippage = args.stress_slippage
-    sres, _, _, _ = _run_backtest(argparse.Namespace(ml=False, calendar=None), stress, df)
-    sm = sres.metrics()
-    out(f"Cost stress test (slippage {args.stress_slippage} instead of {cfg.backtest.slippage}): net "
-        f"{sm['net_profit']:+.2f} ({sm['return_pct']:+.2f}%), avg R {sm['avg_r']:+.3f}, PF "
-        f"{'inf' if sm['profit_factor'] == float('inf') else round(sm['profit_factor'], 2)}")
-    rb = None
-    if args.mc:
-        out(f"Random-entry benchmark ({args.mc} runs)...")
-        rb = random_entry_benchmark(df, cfg, res, n_sims=args.mc, start=start, features=feats, progress=True)
-        if rb.get("n_sims"):
-            out(f"Random entries: mean {rb['random_net_mean']:+.2f}, 5-95% [{rb['random_net_p5']:+.2f}, "
-                f"{rb['random_net_p95']:+.2f}]; strategy beats {rb['strategy_percentile']:.0f}% (p={rb['p_value']:.3f})")
-            out(f"BACKTEST VERDICT (current settings): {rb['verdict']}")
-        else:
-            out(rb.get("note", ""))
-    page = build_report(res, "TulipAI backtest (broker data)", f"{df.index[start]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}",
-                        buy_hold=bh_eq, random_bench=rb, notes=NOTES)
-    out(f"Report: {write_report('reports/backtest.html', page)}")
-
-    # 3. walk-forward -----------------------------------------------------------------
-    out(f"\n== 3. Walk-forward, out-of-sample (train {args.train_months}m / test {args.test_months}m) ==")
+    # 2. walk-forward: the honest test ------------------------------------------------
+    sec = _time.time()
+    out(f"\n== 2. Walk-forward, out-of-sample (train {args.train_months}m / test {args.test_months}m) - the honest test ==")
+    out("Each month the settings are chosen on the previous months only and then traded, unseen, on the next month; "
+        "only those unseen months are counted. The live bot repeats this step by itself at the start of every month.")
+    explicit = copy.deepcopy(getattr(cfg, "explicit_strategy_params", None) or {})
+    wf_cfg = cfg.copy()
+    wf_cfg.strategy.params = copy.deepcopy(explicit)  # start from the defaults, not from the previous run's file
+    new_params = None
+    feats = None
     try:
-        wf = walk_forward(df, cfg, args.train_months, args.test_months, args.max_combos, 15)
-        out(summarize_windows(wf).to_string(index=False, float_format=lambda v: f"{v:+.2f}"))
+        wf = walk_forward(df, wf_cfg, args.train_months, args.test_months, args.max_combos, 15)
+        table = summarize_windows(wf)
+        fmt = {c: (lambda v: f"{v:+.2f}") for c in table.columns if table[c].dtype.kind == "f"}
+        fmt["test_max_dd_pct"] = lambda v: f"{v:.2f}"
+        out(table.to_string(index=False, formatters=fmt))
         out(format_metrics(wf.metrics()))
-        saved = save_params_file(cfg.strategy.params_file or "config/optimized_params.yaml", wf.best_params,
-                                 f"walk-forward, train {args.train_months} months / test {args.test_months} month(s), latest window",
-                                 f"{df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d}")
-        out(f"Latest parameters (saved to {saved}; the live bot now uses them): " + str(wf.best_params))
         oos_t = wf.oos.trades
+        r = oos_t["r_multiple"]
+        if len(r) > 1 and r.std(ddof=1) > 0:
+            se = float(r.std(ddof=1) / math.sqrt(len(r)))
+            out(f"Confidence: avg R {r.mean():+.3f} +/- {se:.3f} per trade (t = {r.mean() / se:.1f}; about 2 or more "
+                "means the profit is probably not chance)")
+        rets = table["test_return_pct"]
+        out(f"Months: {int((rets > 0).sum())} of {len(rets)} profitable; best {rets.max():+.2f}%, worst {rets.min():+.2f}%")
         for side, name in ((1, "long"), (-1, "short")):
             t = oos_t[oos_t["side"] == side]
             if len(t):
@@ -512,9 +489,19 @@ def cmd_research(args) -> int:
         wf_bh, wf_bh_stats = buy_and_hold(sub, wf.oos.initial_balance, bar_minutes=cfg.tf_minutes)
         out(f"Buy & hold gold over the same test period: {wf_bh_stats['return_pct']:+.2f}% "
             f"(max DD {wf_bh_stats['max_dd_pct']:.1f}%, Sharpe {wf_bh_stats['sharpe']:.2f})")
+        if len(oos_t):
+            per_lot = cfg.symbol.contract_size * cfg.symbol.value_multiplier
+            extra = 2 * (args.stress_slippage - cfg.backtest.slippage) * oos_t["lots"] * per_lot
+            risk_money = (oos_t["sl_dist"] * oos_t["lots"] * per_lot).where(lambda v: v > 0)
+            pnl_s = oos_t["pnl"] - extra
+            out(f"Cost stress test (same trades, every fill slips {args.stress_slippage} instead of "
+                f"{cfg.backtest.slippage}): net {pnl_s.sum():+,.2f}, avg R {(pnl_s / risk_money).mean():+.3f}")
         rb_wf = None
         if args.mc:
-            out(f"Random-entry benchmark for the walk-forward result ({args.mc} runs, same period and buy/sell mix)...")
+            from .indicators import Features
+
+            feats = Features(df, cfg.symbol.timeframe)
+            out(f"Random-entry benchmark ({args.mc} runs, same period and buy/sell mix)...")
             rb_wf = random_entry_benchmark(df, cfg, wf.oos, n_sims=args.mc, start=int(df.index.searchsorted(first_open)),
                                            features=feats, progress=True, kill_switch=False, seed=1)
             if rb_wf.get("n_sims"):
@@ -522,13 +509,51 @@ def cmd_research(args) -> int:
                     f"{rb_wf['random_net_p95']:+.2f}]; walk-forward beats {rb_wf['strategy_percentile']:.0f}% "
                     f"(p={rb_wf['p_value']:.3f}, {rb_wf['long_fraction']:.0%} buys)")
                 out(f"WALK-FORWARD VERDICT: {rb_wf['verdict']}")
+            else:
+                out(rb_wf.get("note", ""))
         page = build_report(wf.oos, "TulipAI walk-forward (broker data)", "Out-of-sample only", buy_hold=wf_bh,
                             random_bench=rb_wf, windows=wf.windows, notes=NOTES)
         out(f"Report: {write_report('reports/walkforward.html', page)}")
+        new_params = wf.best_params
+        saved = save_params_file(cfg.strategy.params_file or "config/optimized_params.yaml", new_params,
+                                 f"walk-forward, train {args.train_months} months / test {args.test_months} month(s), latest window",
+                                 f"{df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d}")
+        out(f"Latest settings (saved to {saved}; the bot uses them now and re-tunes itself each new month): {new_params}")
     except ValueError as exc:
         out(f"Walk-forward skipped: {exc}")
+    out(f"(section took {(_time.time() - sec) / 60:.1f} min)")
+
+    # 3. frozen-settings check --------------------------------------------------------
+    sec = _time.time()
+    out("\n== 3. Frozen-settings check (NOT the main test) ==")
+    fz = cfg.copy()
+    if new_params is not None:
+        fz.strategy.params = {m: {**(new_params.get(m) or {}), **(explicit.get(m) or {})}
+                              for m in set(new_params) | set(explicit)}
+        out("The latest settings, applied unchanged to the whole history with the drawdown stop off so every period "
+            "shows. The last ~6 months are what they were tuned on, so they look good; older periods show how a FIXED "
+            "setting copes as the market changes - the reason the bot re-tunes every month.")
+    else:
+        out(f"Settings: {getattr(cfg, 'strategy_source', 'built-in default strategy settings')}, drawdown stop off.")
+    fz.risk.max_drawdown_pct = 100.0
+    res, feats, start, strat = _run_backtest(argparse.Namespace(ml=False, calendar=None), fz, df)
+    out(format_metrics(res.metrics()))
+    bt_t = res.trades
+    if len(bt_t):
+        ex = pd.to_datetime(bt_t["exit_time"], utc=True)
+        half = ex.dt.year.astype(str) + "-H" + ((ex.dt.month - 1) // 6 + 1).astype(str)
+        for k, g in bt_t.groupby(half):
+            out(f"  {k}: {len(g):>4} trades, win {100 * (g['pnl'] > 0).mean():5.1f}%, avg R {g['r_multiple'].mean():+.3f}, "
+                f"pnl {g['pnl'].sum():+,.2f}")
+    bh_eq, bh = buy_and_hold(df, res.initial_balance, start=start, bar_minutes=cfg.tf_minutes)
+    out(f"Buy & hold gold over the whole history: {bh['return_pct']:+.2f}% (max DD {bh['max_dd_pct']:.1f}%)")
+    page = build_report(res, "TulipAI frozen-settings backtest (broker data, not a fair test)",
+                        f"{df.index[start]:%Y-%m-%d} to {df.index[-1]:%Y-%m-%d}", buy_hold=bh_eq, notes=NOTES)
+    out(f"Report: {write_report('reports/backtest.html', page)}")
+    out(f"(section took {(_time.time() - sec) / 60:.1f} min)")
 
     # 4. ML filter --------------------------------------------------------------------
+    sec = _time.time()
     out("\n== 4. ML meta-label filter ==")
     try:
         from .ml import train
@@ -540,12 +565,44 @@ def cmd_research(args) -> int:
             else f"ML filter does NOT help: {why} - keep ml.enabled: false")
     except Exception as exc:
         out(f"ML skipped: {exc}")
+    out(f"(section took {(_time.time() - sec) / 60:.1f} min)")
 
-    out(f"\nFinished in {(_time.time() - t0) / 60:.1f} min.")
+    out(f"\nFinished in {(_time.time() - t0) / 60:.1f} min (CPU time {_time.process_time() / 60:.1f} min; much less "
+        "than the total means the PC slept or was busy with other programs).")
     path = Path("reports/research_summary.txt")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\nSaved {path}. Send that file (or paste its text) to Claude.")
+    return 0
+
+
+def cmd_retune(args) -> int:
+    """One walk-forward step now: re-choose the settings on the last N months and save them.
+    The running bot does this by itself at the start of every month; this is the manual version."""
+    from .backtest.walkforward import retune
+
+    cfg = _cfg(args)
+    months = args.months or cfg.strategy.retune_train_months
+    if args.data:
+        df = _load_data(args, cfg)
+    else:
+        b = _mt5_broker(cfg)
+        b.connect()
+        try:
+            swl, sws, _ = b.swap_per_lot_night()
+            if swl is not None:
+                cfg.backtest.swap_long, cfg.backtest.swap_short = float(swl), float(sws)
+        except Exception as exc:  # pragma: no cover - depends on the broker
+            print(f"Swap info unavailable ({exc}); using config values")
+        end = pd.Timestamp.now(tz="UTC")
+        df = b.history(end - pd.DateOffset(months=months + 1), end, cfg.symbol.timeframe)
+        b.shutdown()
+    print(f"Re-tuning on the last {months} months of {len(df)} bars (starting from: {cfg.strategy_source})...")
+    res = retune(df, cfg, months, args.max_combos)
+    saved = save_params_file(cfg.strategy.params_file or "config/optimized_params.yaml", res.params,
+                             f"manual re-tune on the last {months} months (one walk-forward step)", res.train_range)
+    print(f"Training period {res.train_range}: {res.trades} trades, avg R {res.train_metrics['avg_r']:+.3f} (in-sample)")
+    print(f"Saved to {saved}; the bot uses them from its next start: {res.params}")
     return 0
 
 
@@ -648,6 +705,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--mode", default=None)
     s.add_argument("--out", default="reports/review.md")
     s.set_defaults(fn=cmd_review)
+
+    s = sub.add_parser("retune", help="re-choose strategy settings on the last months now (the bot does this monthly)")
+    s.add_argument("--data", help="candle CSV instead of MT5 history")
+    s.add_argument("--start")
+    s.add_argument("--end")
+    s.add_argument("--utc-offset", type=float, default=0.0)
+    s.add_argument("--months", type=int, default=0, help="training months (default: strategy.retune_train_months)")
+    s.add_argument("--max-combos", type=int, default=27)
+    s.set_defaults(fn=cmd_retune)
 
     s = sub.add_parser("research", help="fetch MT5 history + backtest + benchmarks + walk-forward + ML, one summary")
     s.add_argument("--start", default="2024-09-01")

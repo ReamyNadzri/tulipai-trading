@@ -129,6 +129,14 @@ class Features:
     def macd(self, fast: int = 12, slow: int = 26, signal: int = 9):
         return self._memo(("macd", fast, slow, signal), lambda: macd(self.close, fast, slow, signal))
 
+    def close_stamps(self) -> list:
+        """Bar close times as a plain list of Timestamps (fast per-bar access in the backtester)."""
+        return self._memo("close_stamps", lambda: list(self.index + self.bar))
+
+    def open_stamps(self) -> list:
+        """Bar open times as a plain list of Timestamps."""
+        return self._memo("open_stamps", lambda: list(self.index))
+
     def hour(self) -> np.ndarray:
         return self._memo("hour", lambda: np.asarray(self.index.hour))
 

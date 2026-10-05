@@ -284,9 +284,12 @@ def test_research_command_end_to_end(cfg, tmp_path, monkeypatch):
                    "--train-months", "3", "--test-months", "2"])
     assert rc == 0
     text = (tmp_path / "reports" / "research_summary.txt").read_text()
-    for needle in ("== 1. Data ==", "Symbol: XAUUSDc", "BACKTEST VERDICT", "WALK-FORWARD VERDICT",
-                   "Strategy settings:", "By direction", "ML filter", "Finished"):
+    for needle in ("== 1. Data ==", "Symbol: XAUUSDc", "WALK-FORWARD VERDICT", "Confidence: avg R", "Months:",
+                   "Cost stress test", "Frozen-settings check", "-H", "By direction", "ML filter", "section took",
+                   "Finished", "CPU time"):
         assert needle in text, needle
+    assert text.index("WALK-FORWARD VERDICT") < text.index("Frozen-settings check")
+    assert "BACKTEST VERDICT" not in text  # the frozen check is not a test and gets no verdict
     assert "generated:" in (tmp_path / "config" / "optimized_params.yaml").read_text()
     assert "password" not in text.lower().replace("no passwords", "")
     assert (tmp_path / "reports" / "walkforward.html").exists() and (tmp_path / "data" / "xauusd_m15.csv").exists()

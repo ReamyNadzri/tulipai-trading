@@ -103,6 +103,9 @@ class Backtester:
         strat = signals["strategy"].to_numpy()
         bar = pd.Timedelta(minutes=cfg.tf_minutes)
         close_times = df.index + bar
+        own = feats.df is df and feats.bar == bar
+        stamps = feats.close_stamps() if own else list(close_times)
+        opens = feats.open_stamps() if own else list(df.index)
 
         risk = RiskManager(cfg.risk, cfg.tf_minutes)
         slip, cs, vm, comm = bt.slippage, sym.contract_size, sym.value_multiplier, bt.commission_per_lot
@@ -120,7 +123,7 @@ class Backtester:
             balance += pnl
             risk_money = p.sl_dist * p.lots * cs * vm
             trades.append({
-                "id": p.id, "side": p.side, "strategy": p.strategy, "signal_time": df.index[p.signal_idx],
+                "id": p.id, "side": p.side, "strategy": p.strategy, "signal_time": opens[p.signal_idx],
                 "entry_time": p.entry_time, "exit_time": exit_time,
                 "entry": p.entry, "exit": price, "sl_initial": p.sl_initial, "tp": p.tp,
                 "lots": p.lots, "sl_dist": p.sl_dist, "tp_dist": p.tp_dist, "pnl": pnl,
@@ -129,14 +132,28 @@ class Backtester:
             })
             risk.on_trade_closed(pnl, exit_time)
 
-        for i in range(start, end):
-            t_close = close_times[i]
+        # Bars that carry an entry signal. While the account is flat with no pending order,
+        # nothing can change until the next one (equity == balance, so the risk state - day
+        # start, peak, halt - stays exactly as it was), so those bars are filled in one go.
+        sig_bars = np.flatnonzero(sig[start:end] != 0) + start
+        i = start - 1
+        while True:
+            i += 1
+            if not positions and pending is None:
+                k = int(np.searchsorted(sig_bars, i))
+                nxt = int(sig_bars[k]) if k < len(sig_bars) else end
+                if nxt > i:
+                    equity[i - start:min(nxt, end) - start] = balance
+                    i = nxt
+            if i >= end:
+                break
+            t_close = stamps[i]
             # 1) open of bar i: deferred closes, then the pending entry
             if positions and any(p.close_pending for p in positions):
                 keep = []
                 for p in positions:
                     if p.close_pending:
-                        close(p, i, exit_fill_market(p.side, o[i], spread[i], slip), p.close_pending, df.index[i])
+                        close(p, i, exit_fill_market(p.side, o[i], spread[i], slip), p.close_pending, opens[i])
                     else:
                         keep.append(p)
                 positions = keep
@@ -147,7 +164,7 @@ class Backtester:
                 quote = o[i] + spread[i] if side > 0 else o[i]
                 sl, tp = initial_levels(side, quote, pending["sl_dist"], pending["tp_dist"])
                 fill = entry_fill(side, o[i], spread[i], slip)
-                positions.append(_Pos(next_id, side, i, pending["signal_idx"], df.index[i], fill, sl, tp,
+                positions.append(_Pos(next_id, side, i, pending["signal_idx"], opens[i], fill, sl, tp,
                                       pending["lots"], pending["sl_dist"], pending["tp_dist"],
                                       pending["strategy"], pending["ml_prob"], sl_initial=sl))
                 next_id += 1

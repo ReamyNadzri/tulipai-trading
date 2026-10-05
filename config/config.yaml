@@ -55,6 +55,8 @@ strategy:
   members: [session_breakout, trend_pullback, mean_reversion]   # priority order
   params: {}                  # manual overrides, e.g. {trend_pullback: {adx_min: 22, rr: 2.5}}
   params_file: config/optimized_params.yaml   # written by research.bat (walk-forward); used when present
+  auto_retune: true           # live bot re-chooses the settings itself each new month (as the walk-forward did)
+  retune_train_months: 6      # ...on this many months of recent MT5 history
 
 ai:
   mode: 'off'                 # 'off' = rules only (default) | filter (Claude approves/vetoes) | autonomous (Claude decides)

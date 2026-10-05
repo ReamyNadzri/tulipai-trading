@@ -14,13 +14,19 @@ def combine_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     """Merge member signal frames given in priority order (first wins, conflicts cancel)."""
     sigs = np.vstack([fr["signal"].to_numpy() for fr in frames])
     conflict = (sigs > 0).any(axis=0) & (sigs < 0).any(axis=0)
-    out = frames[-1].copy()
+    base = frames[-1]
+    cols = {c: base[c].to_numpy().copy() for c in base.columns}
     for fr in reversed(frames[:-1]):  # earlier members overwrite later ones
         hit = fr["signal"].to_numpy() != 0
-        out.loc[hit, :] = fr.loc[hit, :]
-    out.loc[conflict, "signal"] = 0
-    out.loc[out["signal"] == 0, ["sl_dist", "tp_dist", "strength"]] = 0.0
-    out.loc[out["signal"] == 0, "strategy"] = ""
+        for c, arr in cols.items():
+            arr[hit] = fr[c].to_numpy()[hit]
+    sig = cols["signal"]
+    sig[conflict] = 0
+    flat = sig == 0
+    for c in ("sl_dist", "tp_dist", "strength"):
+        cols[c][flat] = 0.0
+    cols["strategy"][flat] = ""
+    out = pd.DataFrame(cols, index=base.index)
     out["signal"] = out["signal"].astype(int)
     return out
 

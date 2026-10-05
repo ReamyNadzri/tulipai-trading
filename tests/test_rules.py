@@ -99,6 +99,10 @@ def test_losing_strategy_is_never_an_edge():
     assert _verdict(0.001, -50.0, 500).startswith("NO EDGE")
     assert _verdict(0.03, 120.0, 500).startswith("EDGE")
     assert _verdict(0.03, 120.0, 20).startswith("INCONCLUSIVE")
+    # beating random entries is not enough when the profit itself could be chance
+    assert _verdict(0.006, 5900.0, 500, t_stat=1.8).startswith("WEAK EDGE") and "t=1.8" in _verdict(0.006, 5900.0, 500, 1.8)
+    assert _verdict(0.006, 5900.0, 500, t_stat=2.4).startswith("EDGE")
+    assert _verdict(0.008, 1900.0, 500, t_stat=0.7).startswith("NO EDGE")
 
 
 # ---------------------------------------------------------------------------- swap

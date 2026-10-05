@@ -349,13 +349,22 @@ td.wrap-text { white-space: normal; min-width: 220px; }
       }
     }
 
+    const retuneText = (e) => {
+      const r = e.retune;
+      if (!e.auto_retune) return "off (re-run research.bat monthly)";
+      if (!r) return "automatic when a new month starts";
+      if (r.state === "running") return `re-tuning now (started ${t16(r.since)} UTC)...`;
+      if (r.state === "failed") return `failed ${t16(r.at)} UTC: ${r.error} - keeping current settings, retry in 6 h`;
+      return `done ${t16(r.at)} UTC on ${r.train}: ${r.trades} trades, avg ${signed(r.avg_r || 0)} R`;
+    };
     const rs = s.risk_state || {}, kv = $("risk-box"); kv.replaceChildren();
     const ld = eng.last_decision || {};
     [["Risk per trade", `${s.risk_pct}% of equity`], ["Decisions", { off: "rules only (no AI)", filter: "rules + Claude approves", autonomous: "Claude decides" }[s.ai_mode] || s.ai_mode], ["Trades today", rs.trades_today ?? 0],
      ["Loss streak", rs.consecutive_losses ?? 0], ["Cooldown until", rs.cooldown_until ? t16(rs.cooldown_until) : "-"],
      ["Day start equity", fmt(rs.day_start_equity)], ["Peak equity", fmt(rs.peak_equity)],
      ["Last bar", t16(eng.last_bar)], ["Last decision", ld.action ? `${ld.action} - ${ld.reason || ""}` : "-"],
-     ["Server time", eng.server_time || "-"], ["Strategy settings", eng.strategy_source || "-"]].forEach(([k, v]) => {
+     ["Server time", eng.server_time || "-"], ["Strategy settings", eng.strategy_source || "-"],
+     ["Monthly re-tune", retuneText(eng)]].forEach(([k, v]) => {
       const dt = document.createElement("dt"); dt.textContent = k;
       const dd = document.createElement("dd"); dd.textContent = v;
       kv.append(dt, dd);

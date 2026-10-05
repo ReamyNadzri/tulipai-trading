@@ -58,12 +58,17 @@ on and awake while it trades, or use a cheap Windows VPS.
 ## 2. Prove it before you trust it
 
 With MT5 open and logged in, double-click **`scripts\research.bat`**. It does everything in one go
-on **your broker's own gold history** (about 10-30 minutes):
+on **your broker's own gold history** (about 5-30 minutes, depending on the PC):
 
 1. downloads about 2 years of M15 bars from MT5 and checks the broker's server time zone;
-2. backtests the strategies and compares them with buy & hold and 500 random-entry runs;
-3. runs walk-forward optimisation (tuned on old data, tested on newer data it has never seen);
+2. **walk-forward test, the honest one**: each month the settings are chosen on the previous 6 months
+   only, then traded unseen on the next month. Only those unseen months count. They are compared
+   with buy & hold and 500 random-entry runs, and get a **WALK-FORWARD VERDICT**;
+3. a frozen-settings check: the latest settings applied unchanged to all of history, shown per
+   half-year. It is not a fair test; it shows why the settings must be re-tuned every month;
 4. trains the optional ML filter and reports whether it helps.
+
+Each section prints how long it took.
 
 It writes **`reports\research_summary.txt`** (send this to Claude; it contains no passwords or
 account numbers) plus `reports\backtest.html` and `reports\walkforward.html`.
@@ -81,7 +86,7 @@ Each command writes an HTML report to `reports\`. Read it in this order:
 
 | Benchmark | Question it answers | What "good" looks like |
 |---|---|---|
-| **Random-entry Monte Carlo** | Is the profit skill or luck? Hundreds of runs with the *same* sessions, risk, sizing, stop/target geometry and buy/sell mix, but random entry times. Run for both the backtest and the walk-forward result. | Verdict **EDGE** (p ≤ 0.05). **NO EDGE** means don't trust the profit, even if it's positive. |
+| **Random-entry Monte Carlo** | Is the profit skill or luck? Hundreds of runs with the *same* sessions, risk, sizing, stop/target geometry and buy/sell mix, but random entry times. | Verdict **EDGE**: beats ≥ 95% of random runs **and** the average R per trade is clearly above zero (t ≥ 2). **WEAK EDGE**: only one of the two holds yet; more trades will settle it. **NO EDGE**: don't trust the profit, even if it's positive. |
 | **Walk-forward (out-of-sample)** | Does it still work on data it was *not* tuned on? | Positive total R, and most test windows not negative. This is the honest number. |
 | **Buy & hold gold** | Would simply holding gold have done better? | Better risk-adjusted return (Sharpe, drawdown) than holding. |
 | **Max drawdown / loss streak** | Can you stomach it? | Within what you would accept with real money. |
@@ -91,8 +96,15 @@ target, gaps filled at the open, and no look-ahead. The tests check this: on ran
 the strategies must *not* make money, and the live engine replayed over history must produce
 **exactly** the backtester's trades.
 
-`walkforward` saves the latest parameters to `config\optimized_params.yaml`. Use them with
-`--params config\optimized_params.yaml`, or copy them into `config\config.yaml`.
+`research` and `walkforward` save the latest settings to `config\optimized_params.yaml`, and the
+bot uses them automatically (the panel shows "Strategy settings: walk-forward settings from ...").
+
+**Monthly re-tune, automatic.** The walk-forward result assumes the settings are re-chosen at the
+start of every month. The running bot does exactly that by itself: when a new month starts it
+reads the last 6 months from MT5, picks the settings with the same code the walk-forward test
+used, saves them and switches to them (in the background, so trading never waits). The panel's
+"Monthly re-tune" row shows when it last ran. To do it by hand: `python -m tulipai retune`. To
+turn it off: `strategy.auto_retune: false`.
 
 ### No internet data source? Use Dukascopy
 
@@ -123,7 +135,7 @@ Switch only when **all** are true:
 
 - ≥ 4 weeks and ≥ 50 closed trades on demo;
 - live average R ≥ 0, and live results look like the walk-forward report;
-- the backtest verdict is EDGE or WEAK EDGE (not NO EDGE), and the cost stress test is still positive;
+- the WALK-FORWARD VERDICT is EDGE, and its cost stress test is still positive;
 - if you use Claude: the veto scorecard shows its vetoes are not costing money.
 
 On the cent account, start at `risk_per_trade_pct: 0.5` (or lower) until live results confirm the
@@ -247,7 +259,8 @@ trade management, news blackout, Claude or ML, so its numbers will differ from t
 ```
 python -m tulipai panel                 # browser control panel (what TulipAI.bat runs)
 python -m tulipai live [--paper]        # headless bot using .env credentials (scripts\run_headless.bat)
-python -m tulipai research              # one-shot: MT5 history + backtest + benchmarks + walk-forward + ML
+python -m tulipai research              # one-shot: MT5 history + walk-forward + benchmarks + frozen check + ML
+python -m tulipai retune                # re-choose settings on the last 6 months now (the bot does it monthly)
 python -m tulipai doctor --mt5          # check packages, API key, MT5 connection, symbol spec, sizing
 python -m tulipai fetch --source mt5|dukascopy|synthetic --start YYYY-MM-DD [--end ...]
 python -m tulipai backtest --data CSV [--mc 200] [--ml] [--calendar events.csv] [--params file]

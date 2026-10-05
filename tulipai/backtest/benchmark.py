@@ -104,6 +104,7 @@ def random_entry_benchmark(
     nets = np.array(nets)
     strat_net = result.final_balance - result.initial_balance
     p_value = (np.sum(nets >= strat_net) + 1) / (len(nets) + 1)
+    t_stat = r_t_stat(trades["r_multiple"])
     return {
         "n_sims": n_sims,
         "long_fraction": p_long,
@@ -117,20 +118,39 @@ def random_entry_benchmark(
         "random_trades_mean": float(np.mean(ntr)),
         "strategy_percentile": float((nets < strat_net).mean() * 100),
         "p_value": float(p_value),
+        "t_stat": t_stat,
         "random_nets": nets.tolist(),
-        "verdict": _verdict(p_value, strat_net, n_sims),
+        "verdict": _verdict(p_value, strat_net, n_sims, t_stat),
     }
 
 
-def _verdict(p: float, strat_net: float, n_sims: int) -> str:
+def r_t_stat(r) -> float:
+    """t-statistic of the average R per trade against zero (mean / standard error)."""
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if len(r) < 2 or r.std(ddof=1) == 0:
+        return 0.0
+    return float(r.mean() / (r.std(ddof=1) / np.sqrt(len(r))))
+
+
+def _verdict(p: float, strat_net: float, n_sims: int, t_stat: float = float("inf")) -> str:
+    """Two questions, both must pass for EDGE: are the entries better than random ones (p), and
+    is the profit itself clearly above zero (t)? Random entries lose their costs, so beating them
+    alone only shows the profit is better than paying costs - not that it is above zero."""
     if strat_net <= 0:
         # Beating random entries is meaningless if the strategy still loses money: costs are
         # what make random entries lose, and a smaller loss is not an edge.
         return "NO EDGE: the strategy lost money after costs (beating random entries does not change that)"
     if n_sims < 100:
         return f"INCONCLUSIVE: only {n_sims} random runs - use at least 100 (200+ recommended) for a verdict"
+    if t_stat < 1.0:
+        return (f"NO EDGE: the profit per trade is within normal noise (t={t_stat:.1f}) - it could easily be zero, "
+                "whatever the random runs say")
+    if p <= 0.05 and t_stat >= 2.0:
+        return f"EDGE: beats >=95% of random-entry runs with identical risk rules, and the profit is clear of zero (t={t_stat:.1f})"
     if p <= 0.05:
-        return "EDGE: beats >=95% of random-entry runs with identical risk rules"
+        return (f"WEAK EDGE: beats >=95% of random-entry runs, but the profit per trade is not yet clearly above zero "
+                f"(t={t_stat:.1f}; 2.0+ needed) - more trades will settle it")
     if p <= 0.20:
         return "WEAK EDGE: better than most random runs, not yet statistically convincing"
     return "NO EDGE: results are within what random entries achieve - do not trust the profit"

@@ -91,6 +91,11 @@ class StrategyConfig:
     # Walk-forward settings written by `research`/`walkforward`; used automatically when present.
     # Precedence: built-in defaults < this file < `params` above < --params on the command line.
     params_file: str = "config/optimized_params.yaml"
+    # The walk-forward result assumes the settings are re-chosen at the start of every month on
+    # the previous `retune_train_months`. The live bot does exactly that by itself (in the
+    # background, using MT5 history) when a new month begins and the settings file is older.
+    auto_retune: bool = True
+    retune_train_months: int = 6
 
 
 @dataclass
@@ -256,7 +261,7 @@ def params_file_info(path: str | Path) -> dict:
         try:
             import datetime as _dt
 
-            age = (_dt.date.today() - _dt.date.fromisoformat(generated[:10])).days
+            age = (_dt.datetime.now(_dt.timezone.utc).date() - _dt.date.fromisoformat(generated[:10])).days
         except ValueError:
             age = None
     return {"exists": True, "generated": generated or None, "age_days": age, "params": params}
@@ -265,16 +270,22 @@ def params_file_info(path: str | Path) -> dict:
 def apply_params_file(cfg: Config) -> str:
     """Merge the walk-forward params file under the explicit config params. Returns a short
     description of where the strategy settings come from (for logs and the panel)."""
+    # Remember the hand-set overrides once, so a later re-apply (after a re-tune) keeps them
+    # on top of the new file instead of the previous file's values.
+    explicit = getattr(cfg, "explicit_strategy_params", None)
+    if explicit is None:
+        explicit = copy.deepcopy(cfg.strategy.params or {})
+        cfg.explicit_strategy_params = explicit  # type: ignore[attr-defined]
     info = params_file_info(cfg.strategy.params_file)
     if not info["exists"] or not info["params"]:
         return "built-in default strategy settings"
-    explicit = cfg.strategy.params or {}
     merged = {m: {**(info["params"].get(m) or {}), **(explicit.get(m) or {})}
               for m in set(info["params"]) | set(explicit)}
     cfg.strategy.params = merged
     desc = f"walk-forward settings from {info['generated'] or 'an unknown date'} ({cfg.strategy.params_file})"
     if info["age_days"] is not None and info["age_days"] > PARAMS_MAX_AGE_DAYS:
-        desc += f" - {info['age_days']} days old, re-run research.bat"
+        desc += (f" - {info['age_days']} days old; the running bot re-tunes it at the start of a month "
+                 "(or re-run research.bat)" if cfg.strategy.auto_retune else f" - {info['age_days']} days old, re-run research.bat")
     return desc
 
 
@@ -285,13 +296,13 @@ def save_params_file(path: str | Path, params: dict, method: str, data_range: st
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     body = {
-        "generated": _dt.date.today().isoformat(),
+        "generated": _dt.datetime.now(_dt.timezone.utc).date().isoformat(),  # UTC, like the re-tune month check
         "method": method,
         "data": data_range,
         "strategy": {"params": params},
     }
     header = ("# Strategy settings chosen by TulipAI's walk-forward test. The bot uses them automatically.\n"
-              "# Re-run research.bat about once a month so they stay current (that is how they were tested).\n")
+              "# The running bot re-chooses them at the start of every month (that is how they were tested).\n")
     p.write_text(header + yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
     return p
 

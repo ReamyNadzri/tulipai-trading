@@ -30,12 +30,77 @@ def score(m: dict, min_trades: int) -> float:
     return sqn_like - 0.05 * m["max_dd_pct"]
 
 
+def score_metrics(res: BacktestResult) -> dict:
+    """Just what ``score`` needs - same numbers as compute_metrics, without the costly extras
+    (daily resampling, per-strategy tables) that the optimiser would compute ~1,500 times."""
+    n = len(res.trades)
+    avg_r = float(res.trades["r_multiple"].astype(float).mean()) if n else 0.0
+    max_dd = 0.0
+    if len(res.equity):
+        eq = res.equity.astype(float).ffill().fillna(res.initial_balance).to_numpy()
+        peak = np.maximum.accumulate(np.concatenate([[res.initial_balance], eq]))[1:]
+        max_dd = float(-(eq / peak - 1.0).min()) * 100
+    return {"trades": n, "avg_r": avg_r, "max_dd_pct": max_dd}
+
+
 def _grid(strategy_cls: type[Strategy], base: dict, max_combos: int, rng: np.random.Generator) -> list[dict]:
     keys = list(strategy_cls.param_grid)
     combos = [dict(zip(keys, vals)) for vals in itertools.product(*(strategy_cls.param_grid[k] for k in keys))]
     if len(combos) > max_combos:
         combos = [combos[i] for i in rng.choice(len(combos), size=max_combos, replace=False)]
     return [{**base, **c} for c in combos]
+
+
+class WindowOptimiser:
+    """Chooses strategy parameters on one training slice. Shared by the walk-forward test and
+    by the live bot's monthly re-tune, so the bot re-tunes exactly the way it was tested."""
+
+    def __init__(self, df: pd.DataFrame, cfg: Config, max_combos: int = 27, min_trades: int = 15, seed: int = 0,
+                 features: Features | None = None):
+        self.df, self.cfg = df, cfg
+        self.max_combos, self.min_trades = max_combos, min_trades
+        self.rng = np.random.default_rng(seed)
+        self.feats = features or Features(df, cfg.symbol.timeframe)
+        self.members = cfg.strategy.members if cfg.strategy.name == "ensemble" else [cfg.strategy.name]
+        self.base_params = {m: dict(cfg.strategy.params.get(m, {})) for m in self.members}
+        self.bt = Backtester(cfg)
+        # Signals for every candidate parameter set are computed once on the full history (all
+        # indicators are causal, so slicing afterwards cannot leak future data).
+        self._signals: dict = {}
+        self._combined: dict = {}
+
+    def signals_for(self, name: str, params: dict) -> pd.DataFrame:
+        key = (name, tuple(sorted(params.items())))
+        if key not in self._signals:
+            self._signals[key] = STRATEGIES[name](**params).generate(self.feats)
+        return self._signals[key]
+
+    def combined(self, param_map: dict) -> pd.DataFrame:
+        if len(self.members) == 1:
+            return self.signals_for(self.members[0], param_map[self.members[0]])
+        key = tuple((m, tuple(sorted(param_map[m].items()))) for m in self.members)
+        if key not in self._combined:
+            if len(self._combined) >= 4:  # tiny cache: only the train/test re-runs of a choice repeat
+                self._combined.clear()
+            self._combined[key] = combine_frames([self.signals_for(m, param_map[m]) for m in self.members])
+        return self._combined[key]
+
+    def run(self, param_map: dict, i0: int, i1: int, initial_balance: float | None = None) -> BacktestResult:
+        return self.bt.run(self.df, self.combined(param_map), start=i0, end=i1, initial_balance=initial_balance,
+                           features=self.feats)
+
+    def optimise(self, i0: int, i1: int, start: dict | None = None) -> dict:
+        """Coordinate-wise search on bars [i0, i1): optimise one member at a time, the others
+        held at their current best. ``start`` is where the search begins (the previous choice)."""
+        chosen = {m: dict((start or self.base_params)[m]) for m in self.members}
+        for m in self.members:
+            best_s, best_p = -np.inf, chosen[m]
+            for params in _grid(STRATEGIES[m], self.base_params[m], self.max_combos, self.rng):
+                s = score(score_metrics(self.run({**chosen, m: params}, i0, i1)), self.min_trades)
+                if s > best_s:
+                    best_s, best_p = s, params
+            chosen[m] = best_p
+        return chosen
 
 
 @dataclass
@@ -58,35 +123,16 @@ def walk_forward(
     seed: int = 0,
     progress: bool = True,
 ) -> WalkForwardResult:
-    rng = np.random.default_rng(seed)
-    feats = Features(df, cfg.symbol.timeframe)
-    members = cfg.strategy.members if cfg.strategy.name == "ensemble" else [cfg.strategy.name]
-    base_params = {m: dict(cfg.strategy.params.get(m, {})) for m in members}
-    bt = Backtester(cfg)
+    opt = WindowOptimiser(df, cfg, max_combos, min_trades, seed)
+    members = opt.members
     idx = df.index
     warm = cfg.backtest.warmup_bars
-
-    # Signals for every candidate parameter set are computed once on the full history (all
-    # indicators are causal, so slicing afterwards cannot leak future data).
-    cache: dict = {}
-
-    def signals_for(name: str, params: dict) -> pd.DataFrame:
-        key = (name, tuple(sorted(params.items())))
-        if key not in cache:
-            cache[key] = STRATEGIES[name](**params).generate(feats)
-        return cache[key]
-
-    def combined(param_map: dict) -> pd.DataFrame:
-        if len(members) == 1:
-            return signals_for(members[0], param_map[members[0]])
-        frames = [signals_for(m, param_map[m]) for m in members]
-        return combine_frames(frames)
 
     t0 = idx[0] + pd.DateOffset(months=train_months)
     windows = []
     balance = cfg.backtest.initial_balance
     oos_trades, oos_equity = [], []
-    current = {m: dict(base_params[m]) for m in members}
+    current = {m: dict(opt.base_params[m]) for m in members}
     while True:
         test_start, test_end = t0, t0 + pd.DateOffset(months=test_months)
         if test_start >= idx[-1] or idx[-1] - test_start < pd.Timedelta(days=10):
@@ -99,19 +145,9 @@ def walk_forward(
             t0 = test_end
             continue
 
-        # Coordinate-wise search: optimise one member at a time, others held at current best.
-        chosen = {m: dict(current[m]) for m in members}
-        for m in members:
-            best_s, best_p = -np.inf, chosen[m]
-            for params in _grid(STRATEGIES[m], base_params[m], max_combos, rng):
-                trial = {**chosen, m: params}
-                r = bt.run(df, combined(trial), start=i_tr0, end=i_te0, features=feats)
-                s = score(r.metrics(), min_trades)
-                if s > best_s:
-                    best_s, best_p = s, params
-            chosen[m] = best_p
-        train_res = bt.run(df, combined(chosen), start=i_tr0, end=i_te0, features=feats)
-        test_res = bt.run(df, combined(chosen), start=i_te0, end=i_te1, initial_balance=balance, features=feats)
+        chosen = opt.optimise(i_tr0, i_te0, current)
+        train_res = opt.run(chosen, i_tr0, i_te0)
+        test_res = opt.run(chosen, i_te0, i_te1, initial_balance=balance)
         tm, sm = test_res.metrics(), train_res.metrics()
         windows.append({
             "train": f"{idx[i_tr0].date()} -> {idx[i_te0 - 1].date()}",
@@ -139,9 +175,39 @@ def walk_forward(
     return WalkForwardResult(windows=windows, oos=oos, best_params=current)
 
 
+@dataclass
+class RetuneResult:
+    params: dict
+    train_range: str
+    train_metrics: dict
+    trades: int
+
+
+def retune(df: pd.DataFrame, cfg: Config, train_months: int = 6, max_combos: int = 27, min_trades: int = 15,
+           seed: int = 0) -> RetuneResult:
+    """One walk-forward step done "live": choose the parameters on the most recent
+    ``train_months`` of ``df`` (starting from the current settings), as the walk-forward test
+    did at the start of every test month."""
+    opt = WindowOptimiser(df, cfg, max_combos, min_trades, seed)
+    idx = df.index
+    end_time = idx[-1] + pd.Timedelta(minutes=cfg.tf_minutes)
+    train_start = end_time - pd.DateOffset(months=train_months)
+    if idx[0] > train_start + pd.Timedelta(days=7):
+        raise ValueError(f"history starts {idx[0]:%Y-%m-%d}, after the {train_months}-month training start "
+                         f"{train_start:%Y-%m-%d}; in MT5 set Tools > Options > Charts > Max bars in chart to Unlimited")
+    i0 = max(int(idx.searchsorted(train_start)), cfg.backtest.warmup_bars)
+    i1 = len(df)
+    if i1 - i0 < 500:
+        raise ValueError(f"only {i1 - i0} bars in the last {train_months} months after warm-up; need 500+")
+    chosen = opt.optimise(i0, i1, opt.base_params)
+    m = opt.run(chosen, i0, i1).metrics()
+    return RetuneResult(chosen, f"{idx[i0]:%Y-%m-%d} -> {idx[-1]:%Y-%m-%d}", m, int(m["trades"]))
+
+
 def summarize_windows(result: WalkForwardResult) -> pd.DataFrame:
     rows = [{k: v for k, v in w.items() if k != "params"} for w in result.windows]
     return pd.DataFrame(rows)
 
 
-__all__ = ["walk_forward", "WalkForwardResult", "summarize_windows", "compute_metrics"]
+__all__ = ["walk_forward", "retune", "WindowOptimiser", "WalkForwardResult", "RetuneResult", "summarize_windows",
+           "compute_metrics"]

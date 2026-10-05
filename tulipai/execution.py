@@ -8,8 +8,6 @@ target we assume the stop came first (pessimistic).
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 import numpy as np
 import pandas as pd
 
@@ -27,20 +25,32 @@ def spread_array(df, floor: float) -> np.ndarray:
     return np.full(len(df), float(floor))
 
 
+_ROLL: dict = {"years": None, "t": np.empty(0, dtype=np.int64), "cw": np.zeros(1)}
+
+
+def _rollover_table(y0: int, y1: int) -> tuple[np.ndarray, np.ndarray]:
+    """UTC instants (ns) of every weekday 17:00 New York rollover in years y0..y1 (cached and
+    widened on demand), plus cumulative swap weights (Wednesday = 3)."""
+    have = _ROLL["years"]
+    if have is None or y0 < have[0] or y1 > have[1]:
+        lo, hi = (y0, y1) if have is None else (min(y0, have[0]), max(y1, have[1]))
+        days = pd.date_range(f"{lo - 1}-12-25", f"{hi + 1}-01-07", freq="D")
+        days = days[days.weekday < 5]
+        rolls = (days + pd.Timedelta(hours=17)).tz_localize(NY)
+        w = np.where(days.weekday == 2, 3.0, 1.0)
+        _ROLL.update(years=(lo, hi), t=rolls.tz_convert("UTC").as_unit("ns").asi8, cw=np.concatenate([[0.0], np.cumsum(w)]))
+    return _ROLL["t"], _ROLL["cw"]
+
+
 def rollover_nights(entry_time: pd.Timestamp, exit_time: pd.Timestamp) -> float:
     """How many daily rollovers (17:00 New York) a position was held across, weighted the
     way brokers charge overnight swap: the Wednesday rollover counts 3x to cover the weekend."""
     if exit_time <= entry_time:
         return 0.0
-    a, b = entry_time.tz_convert(NY), exit_time.tz_convert(NY)
-    nights, day = 0.0, a.date()
-    while day <= b.date():
-        if day.weekday() < 5:
-            roll = pd.Timestamp(day).replace(hour=17).tz_localize(NY)
-            if a < roll < b:
-                nights += 3.0 if day.weekday() == 2 else 1.0
-        day += timedelta(days=1)
-    return nights
+    t, cw = _rollover_table(entry_time.year, exit_time.year)
+    i = int(np.searchsorted(t, entry_time.value, side="right"))  # rollovers strictly after the entry
+    j = int(np.searchsorted(t, exit_time.value, side="left"))  # ... and strictly before the exit
+    return float(cw[j] - cw[i]) if j > i else 0.0
 
 
 def swap_money(side: int, lots: float, entry_time: pd.Timestamp, exit_time: pd.Timestamp,

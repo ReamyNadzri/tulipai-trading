@@ -20,4 +20,5 @@ def cfg():
     c = Config()
     c.ai.mode = "off"
     c.news.enabled = False
+    c.strategy.auto_retune = False  # tests that want it switch it on with a temp params file
     return c

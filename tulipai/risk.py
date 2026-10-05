@@ -56,11 +56,15 @@ class RiskManager:
         self.cfg = cfg
         self.bar = pd.Timedelta(minutes=tf_minutes)
         self.state = state or RiskState()
+        self._day_key, self._day_str = None, ""
 
     # ----------------------------------------------------------------- state updates
     def update(self, now: pd.Timestamp, equity: float) -> None:
         st = self.state
-        day = now.strftime("%Y-%m-%d")
+        day_key = (now.year, now.month, now.day)  # cheaper than formatting a string every bar
+        if day_key != self._day_key:
+            self._day_key, self._day_str = day_key, now.strftime("%Y-%m-%d")
+        day = self._day_str
         if st.day != day:
             st.day = day
             st.day_start_equity = equity
